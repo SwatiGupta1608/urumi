@@ -1,0 +1,136 @@
+# Urumi MCP Gateway. Defaults target the local k3d cluster `urumi`, installed
+# into namespace `urumi-gateway`. NO CREDENTIALS IN THIS FILE: only Secret
+# names/keys. Create the Secrets with scripts/create-secrets.sh.
+
+nameOverride: ""
+fullnameOverride: ""
+
+gateway:
+  image:
+    repository: urumi/gateway
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+  # Secret `gateway-secrets`: key-pepper (HMAC pepper for API-key hashes).
+  secret:
+    name: gateway-secrets
+    pepperKey: key-pepper
+  # Secret mounted as files: each key is a credential reference an admin can
+  # attach to an upstream (e.g. notes-token, github-token). Values are never
+  # returned by the API.
+  upstreamCredentialsSecret: gateway-upstream-credentials
+  settings:
+    discoveryTimeout: 5
+    callTimeout: 30
+    connectTimeout: 3
+    discoveryInterval: 60
+    # SSRF policy: upstream hostnames must match these patterns and resolve
+    # into these networks (k3s defaults: pods 10.42/16, services 10.43/16).
+    upstreamAllowedHosts: "*.svc.cluster.local"
+    upstreamAllowedCidrs: "10.42.0.0/16,10.43.0.0/16"
+    upstreamAllowedPorts: "8000,8082"
+    upstreamAllowHttp: true
+  # Extra Host headers accepted on /mcp (Service names + localhost are added).
+  extraAllowedHosts: []
+  # Labels added to gateway pods so upstream NetworkPolicies admit them.
+  extraPodLabels:
+    urumi.dev/woocommerce-mcp-client: "true"
+  networkPolicy:
+    enabled: true
+    # Only pods with this label in this namespace may call the gateway
+    # (future dashboard / chat agent). kubectl port-forward also works.
+    clientPodLabels:
+      urumi.dev/gateway-client: "true"
+    # Upstream MCP servers the gateway may reach (egress allow-list). This is
+    # the hard boundary behind the API's URL validation.
+    upstreams:
+      - name: woocommerce
+        namespace: woocommerce
+        podLabels:
+          app.kubernetes.io/name: woocommerce
+          app.kubernetes.io/component: mcp
+        port: 8000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+postgres:
+  image:
+    repository: docker.io/library/postgres
+    tag: "17.11-trixie"
+    # Multi-arch index (amd64 + arm64); runs as uid 999.
+    digest: "sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe"
+    pullPolicy: IfNotPresent
+  database: gateway
+  username: gateway
+  # Secret `gateway-postgres`: password.
+  secret:
+    name: gateway-postgres
+    passwordKey: password
+  persistence:
+    storageClass: ""
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+notes:
+  enabled: true
+  image:
+    repository: urumi/notes-mcp
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  port: 8000
+  # The same key in the gateway credentials Secret, so the gateway can send it.
+  tokenKey: notes-token
+  persistence:
+    storageClass: ""
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
+
+github:
+  enabled: true
+  image:
+    repository: ghcr.io/github/github-mcp-server
+    tag: "v2.0.2"
+    # Multi-arch index (amd64 + arm64); verified non-root/read-only locally.
+    digest: "sha256:ffced0d76e77428532a2ced185516992d77fd146d69eec2f244e6237d1a97796"
+    pullPolicy: IfNotPresent
+  port: 8082
+  # No token lives in this pod: the GitHub MCP server's HTTP mode takes the
+  # caller's bearer token per request; the gateway sends the `github-token`
+  # credential reference.
+  args:
+    - --read-only
+    - --toolsets=repos,issues,users
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  # GitHub API egress (https only), excluding private/cluster ranges.
+  egressExcept:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+    - 100.64.0.0/10

@@ -1,0 +1,11 @@
+Urumi MCP Gateway "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}" (internal only, no Ingress).
+
+MCP endpoint:  http://{{ include "gateway.component" (dict "ctx" . "component" "gateway") }}.{{ .Release.Namespace }}.svc:{{ .Values.gateway.port }}/mcp
+REST API:      http://{{ include "gateway.component" (dict "ctx" . "component" "gateway") }}.{{ .Release.Namespace }}.svc:{{ .Values.gateway.port }}/api/v1
+Callers need pod label(s): {{ range $k, $v := .Values.gateway.networkPolicy.clientPodLabels }}{{ $k }}={{ $v }} {{ end }}
+
+First admin (prints the key once):
+  kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "gateway.component" (dict "ctx" . "component" "gateway") }} -- python -m gateway.cli create-admin --name <you>
+
+Local access:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gateway.component" (dict "ctx" . "component" "gateway") }} 18080:{{ .Values.gateway.port }}

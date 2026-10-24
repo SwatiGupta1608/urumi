@@ -1,0 +1,233 @@
+{{- $gwSelector := include "gateway.selectorLabels" (dict "ctx" . "component" "gateway") -}}
+{{- if .Values.notes.enabled }}
+{{- $name := include "gateway.component" (dict "ctx" . "component" "notes") -}}
+{{- $n := .Values.notes -}}
+{{- $hosts := list (printf "%s:*" $name) (printf "%s.%s:*" $name .Release.Namespace) (printf "%s.%s.svc:*" $name .Release.Namespace) (printf "%s.%s.svc.cluster.local:*" $name .Release.Namespace) "localhost:*" -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: notes
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with $n.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $n.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: notes
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gateway.selectorLabels" (dict "ctx" . "component" "notes") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $n.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: notes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # SQLite on a ReadWriteOnce volume
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" (dict "ctx" . "component" "notes") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: notes
+    spec:
+      {{- include "gateway.podSecurity" (dict "uid" 10001) | nindent 6 }}
+      containers:
+        - name: notes
+          image: {{ include "gateway.image" $n.image | quote }}
+          imagePullPolicy: {{ $n.image.pullPolicy }}
+          args: ["--port", "{{ $n.port }}"]
+          env:
+            - name: NOTES_DB_PATH
+              value: /data/notes.db
+            - name: MCP_ALLOWED_HOSTS
+              value: {{ join "," $hosts | quote }}
+            - name: NOTES_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.upstreamCredentialsSecret }}
+                  key: {{ $n.tokenKey }}
+          ports:
+            - name: http
+              containerPort: {{ $n.port }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          {{- include "gateway.containerSecurity" . | nindent 10 }}
+          resources:
+            {{- toYaml $n.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: notes
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" (dict "ctx" . "component" "notes") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $gwSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: http
+  egress: []
+{{- end }}
+{{- if .Values.github.enabled }}
+{{- $name := include "gateway.component" (dict "ctx" . "component" "github") -}}
+{{- $g := .Values.github }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: github
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gateway.selectorLabels" (dict "ctx" . "component" "github") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $g.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: github
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" (dict "ctx" . "component" "github") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: github
+    spec:
+      {{- include "gateway.podSecurity" (dict "uid" 65532) | nindent 6 }}
+      containers:
+        - name: github-mcp
+          image: {{ include "gateway.image" $g.image | quote }}
+          imagePullPolicy: {{ $g.image.pullPolicy }}
+          args:
+            - http
+            - --port={{ $g.port }}
+            {{- range $g.args }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $g.port }}
+          # The MCP endpoint needs a token; a TCP check proves the server is up
+          # without putting a credential in the pod spec.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          {{- include "gateway.containerSecurity" . | nindent 10 }}
+          resources:
+            {{- toYaml $g.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: github
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" (dict "ctx" . "component" "github") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $gwSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    {{- include "gateway.dnsEgress" . | nindent 4 }}
+    # GitHub API over HTTPS; private and cluster ranges excluded.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml $g.egressExcept | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

@@ -1,0 +1,187 @@
+{{- $name := include "gateway.component" (dict "ctx" . "component" "gateway") -}}
+{{- $gw := .Values.gateway -}}
+{{- $s := $gw.settings -}}
+{{- $port := int $gw.port -}}
+{{- $hosts := list (printf "%s:*" $name) (printf "%s.%s:*" $name .Release.Namespace) (printf "%s.%s.svc:*" $name .Release.Namespace) (printf "%s.%s.svc.cluster.local:*" $name .Release.Namespace) "localhost:*" "127.0.0.1:*" -}}
+{{- $hosts = concat $hosts $gw.extraAllowedHosts -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+data:
+  GATEWAY_DB_HOST: {{ include "gateway.component" (dict "ctx" . "component" "postgres") | quote }}
+  GATEWAY_DB_PORT: "5432"
+  GATEWAY_DB_NAME: {{ .Values.postgres.database | quote }}
+  GATEWAY_DB_USER: {{ .Values.postgres.username | quote }}
+  GATEWAY_CREDENTIALS_DIR: /etc/gateway/credentials
+  GATEWAY_DISCOVERY_TIMEOUT: {{ $s.discoveryTimeout | quote }}
+  GATEWAY_CALL_TIMEOUT: {{ $s.callTimeout | quote }}
+  GATEWAY_CONNECT_TIMEOUT: {{ $s.connectTimeout | quote }}
+  GATEWAY_DISCOVERY_INTERVAL: {{ $s.discoveryInterval | quote }}
+  GATEWAY_UPSTREAM_ALLOWED_HOSTS: {{ $s.upstreamAllowedHosts | quote }}
+  GATEWAY_UPSTREAM_ALLOWED_CIDRS: {{ $s.upstreamAllowedCidrs | quote }}
+  GATEWAY_UPSTREAM_ALLOWED_PORTS: {{ $s.upstreamAllowedPorts | quote }}
+  GATEWAY_UPSTREAM_ALLOW_HTTP: {{ $s.upstreamAllowHttp | quote }}
+  MCP_ALLOWED_HOSTS: {{ join "," $hosts | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  # Internal only: no Ingress until dashboard auth/authz is in place.
+  type: ClusterIP
+  selector:
+    {{- include "gateway.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ $gw.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+        {{- with $gw.extraPodLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ toJson $s | sha256sum }}
+    spec:
+      {{- include "gateway.podSecurity" (dict "uid" 10001) | nindent 6 }}
+      containers:
+        - name: gateway
+          image: {{ include "gateway.image" $gw.image | quote }}
+          imagePullPolicy: {{ $gw.image.pullPolicy }}
+          args: ["--port", "{{ $port }}"]
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+          env:
+            - name: GATEWAY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.secret.name }}
+                  key: {{ .Values.postgres.secret.passwordKey }}
+            - name: GATEWAY_KEY_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "gateway.secret.name is required" $gw.secret.name }}
+                  key: {{ $gw.secret.pepperKey }}
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+          {{- include "gateway.containerSecurity" . | nindent 10 }}
+          resources:
+            {{- toYaml $gw.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: upstream-credentials
+              mountPath: /etc/gateway/credentials
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: upstream-credentials
+          secret:
+            secretName: {{ required "gateway.upstreamCredentialsSecret is required" $gw.upstreamCredentialsSecret }}
+            # Missing keys (e.g. no github-token yet) must not block startup.
+            optional: true
+            defaultMode: 0400
+{{- if $gw.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $gw.networkPolicy.clientPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    {{- include "gateway.dnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "gateway.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- if .Values.notes.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "gateway.selectorLabels" (dict "ctx" . "component" "notes") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.notes.port }}
+    {{- end }}
+    {{- if .Values.github.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "gateway.selectorLabels" (dict "ctx" . "component" "github") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.github.port }}
+    {{- end }}
+    {{- range $gw.networkPolicy.upstreams }}
+    # upstream: {{ .name }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .port }}
+    {{- end }}
+{{- end }}

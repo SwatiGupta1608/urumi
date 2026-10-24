@@ -227,8 +227,13 @@ mcp:
     # Only pods with these labels may call the MCP server...
     clientPodLabels:
       urumi.dev/woocommerce-mcp-client: "true"
-    # ...in namespaces matching this selector. null = this namespace only.
-    clientNamespaceSelector: null
+    # ...in namespaces matching this selector (null = this namespace only).
+    # The gateway runs in `urumi-gateway`; labelled pods there and here may call.
+    clientNamespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [woocommerce, urumi-gateway]
   resources:
     requests:
       cpu: 50m

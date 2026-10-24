@@ -1,0 +1,30 @@
+[project]
+name = "urumi-gateway"
+version = "0.1.0"
+description = "Urumi MCP Gateway: authenticated, audited aggregation of in-cluster MCP servers"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp<2",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "pydantic>=2.11,<3",
+    "uvicorn>=0.34,<1",
+    "sqlalchemy[asyncio]>=2.0.36,<3",
+    "asyncpg>=0.30,<1",
+]
+
+[tool.uv]
+# Application, not a library: dependencies only, no build/install of the project.
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.25,<2",
+    "aiosqlite>=0.20,<1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
