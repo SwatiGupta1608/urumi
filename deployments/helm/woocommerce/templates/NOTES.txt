@@ -1,0 +1,23 @@
+WooCommerce release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Storefront: {{ .Values.siteUrl }}/
+Admin:      {{ .Values.siteUrl }}/wp-admin/   (user: {{ .Values.init.adminUser }})
+REST API:   {{ .Values.siteUrl }}/wp-json/wc/v3/
+
+Required Secrets (created out-of-band, never by this chart):
+  {{ .Values.mariadb.auth.existingSecret }}: {{ .Values.mariadb.auth.rootPasswordKey }}, {{ .Values.mariadb.auth.userPasswordKey }}
+  {{ .Values.wordpress.auth.existingSecret }}: {{ .Values.wordpress.auth.adminPasswordKey }}, {{ values .Values.wordpress.auth.saltKeys | sortAlpha | join ", " }}
+{{- if .Values.init.apiKey.enabled }}
+  {{ .Values.init.apiKey.existingSecret }}: {{ .Values.init.apiKey.consumerKeyKey }}, {{ .Values.init.apiKey.consumerSecretKey }}
+{{- end }}
+
+Init job logs:
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "woocommerce.fullname" . }}-init
+
+MariaDB is internal only ({{ include "woocommerce.mariadb.fullname" . }}:{{ .Values.mariadb.service.port }}, ClusterIP).
+{{- if .Values.mcp.enabled }}
+
+MCP server (internal only): http://{{ include "woocommerce.fullname" . }}-mcp.{{ .Release.Namespace }}.svc:{{ .Values.mcp.port }}/mcp
+  Callers need pod label(s): {{ range $k, $v := .Values.mcp.networkPolicy.clientPodLabels }}{{ $k }}={{ $v }} {{ end }}
+  Upstream: {{ .Values.mcp.upstream.baseUrl }} (TLS server name {{ default .Values.ingress.host .Values.mcp.upstream.serverName }})
+{{- end }}

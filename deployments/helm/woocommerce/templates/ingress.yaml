@@ -1,0 +1,72 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullname := include "woocommerce.wordpress.fullname" . -}}
+{{- $redirectName := printf "%s-https-redirect" (include "woocommerce.fullname" .) -}}
+{{- $redirectRef := printf "%s-%s@kubernetescrd" .Release.Namespace $redirectName -}}
+{{- $tls := .Values.ingress.tls -}}
+{{- if .Values.ingress.httpsRedirect.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $redirectName }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+spec:
+  redirectScheme:
+    scheme: https
+    {{- with .Values.ingress.httpsRedirect.port }}
+    port: {{ . | quote }}
+    {{- end }}
+    permanent: true
+---
+{{- end }}
+{{- /*
+With a tls block the main Ingress is pinned to the websecure entrypoint (a
+TLS router does not match plain HTTP), and a second Ingress on the web
+entrypoint only redirects. Without tls, one Ingress serves both entrypoints
+using Traefik's default certificate, and the middleware redirects HTTP.
+*/}}
+{{- $annotations := deepCopy (default dict .Values.ingress.annotations) }}
+{{- if $tls }}
+{{- $_ := set $annotations "traefik.ingress.kubernetes.io/router.entrypoints" "websecure" }}
+{{- $_ := set $annotations "traefik.ingress.kubernetes.io/router.tls" "true" }}
+{{- else if .Values.ingress.httpsRedirect.enabled }}
+{{- $_ := set $annotations "traefik.ingress.kubernetes.io/router.middlewares" $redirectRef }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with $tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- include "woocommerce.ingress.rules" . | nindent 4 }}
+{{- if and $tls .Values.ingress.httpsRedirect.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-http
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $redirectRef }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    {{- include "woocommerce.ingress.rules" . | nindent 4 }}
+{{- end }}
+{{- end }}

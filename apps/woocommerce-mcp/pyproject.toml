@@ -1,0 +1,29 @@
+[project]
+name = "woocommerce-mcp"
+version = "0.1.0"
+description = "WooCommerce MCP server (Streamable HTTP) for the Urumi MCP Gateway"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp<2",
+    "fastapi>=0.115,<1",
+    "certifi>=2024.2",
+    "httpx>=0.28,<1",
+    "pydantic>=2.11,<3",
+    "uvicorn>=0.34,<1",
+]
+
+[tool.uv]
+# Application, not a library: dependencies only, no build/install of the project.
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.25,<2",
+    "respx>=0.22,<1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

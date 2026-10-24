@@ -1,0 +1,40 @@
+# Example overrides for a single-node k3s VPS. Copy, edit the hostnames, and
+# install with:  helm upgrade --install shop . -n woocommerce \
+#                  -f values.yaml -f values-vps.yaml
+# Still no credentials here; create the Secrets on the VPS with
+# scripts/create-secrets.sh exactly as for k3d.
+
+siteUrl: "https://shop.example.com"
+
+ingress:
+  host: shop.example.com
+  httpsRedirect:
+    port: ""          # standard 443 on a VPS
+  # Assumes cert-manager with a ClusterIssuer named letsencrypt-prod.
+  # Alternatively drop these and configure Traefik's ACME resolver instead.
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    - secretName: shop-tls
+      hosts:
+        - shop.example.com
+
+init:
+  adminEmail: admin@example.com
+  apiKey:
+    userEmail: urumi-api@example.com
+
+mariadb:
+  persistence:
+    size: 10Gi
+
+wordpress:
+  persistence:
+    size: 10Gi
+
+mcp:
+  upstream:
+    # Same in-cluster Traefik path; the certificate is publicly trusted, so
+    # no custom CA. serverName defaults to ingress.host.
+    caSecret:
+      name: ""

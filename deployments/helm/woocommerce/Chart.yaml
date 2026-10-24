@@ -1,0 +1,11 @@
+apiVersion: v2
+name: woocommerce
+description: WordPress + WooCommerce + MariaDB for the Urumi MCP Gateway (local k3d and k3s VPS)
+type: application
+version: 0.1.0
+# WordPress core version shipped by the default image tag.
+appVersion: "7.1.3"
+keywords:
+  - wordpress
+  - woocommerce
+  - mariadb

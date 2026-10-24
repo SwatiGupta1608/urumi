@@ -1,0 +1,194 @@
+{{- if .Values.init.enabled }}
+{{- $fullname := printf "%s-init" (include "woocommerce.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: init
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  init.sh: |-
+    {{- .Files.Get "files/init.sh" | nindent 4 }}
+  sync-admin-password.php: |-
+    {{- .Files.Get "files/sync-admin-password.php" | nindent 4 }}
+  seed-demo-orders.php: |-
+    {{- .Files.Get "files/seed-demo-orders.php" | nindent 4 }}
+  upsert-api-key.php: |-
+    {{- .Files.Get "files/upsert-api-key.php" | nindent 4 }}
+---
+# Runs after every install/upgrade. Every step is idempotent, so re-running
+# (helm upgrade, or deleting and re-creating the Job) is safe.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: init
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    # Keep the finished Job for log inspection until the next hook run.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.init.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.init.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "woocommerce.labels" . | nindent 8 }}
+        app.kubernetes.io/component: init
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      # Same uid/gid as Apache's www-data in the wordpress image, so files the
+      # Job writes into wp-content stay writable by WordPress.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The wordpress:cli image has no WordPress core; copy the core files
+        # (minus wp-content, which comes from the PVC) from the exact image
+        # tag the Deployment runs, plus its env-driven wp-config.php.
+        - name: copy-core
+          image: {{ include "woocommerce.image" .Values.wordpress.image | quote }}
+          imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+          command:
+            - sh
+            - -ec
+            - |
+              # Copy entries, not ".": /docroot is a root-owned mount point that
+              # uid 33 may write into but not chmod (tar/cp -a would try).
+              find /usr/src/wordpress -mindepth 1 -maxdepth 1 ! -name wp-content \
+                -exec cp -R {} /docroot/ \;
+              cp /usr/src/wordpress/wp-config-docker.php /docroot/wp-config.php
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.init.resources | nindent 12 }}
+          volumeMounts:
+            - name: docroot
+              mountPath: /docroot
+      containers:
+        - name: wp-cli
+          image: {{ include "woocommerce.image" .Values.init.image | quote }}
+          imagePullPolicy: {{ .Values.init.image.pullPolicy }}
+          workingDir: /var/www/html
+          command: ["sh", "/scripts/init.sh"]
+          env:
+            {{- include "woocommerce.wordpress.env" . | nindent 12 }}
+            - name: HOME
+              value: /tmp
+            - name: WP_CLI_CACHE_DIR
+              value: /tmp/wp-cli-cache
+            - name: WP_CLI_PHP_ARGS
+              value: "-d memory_limit=512M"
+            - name: WP_URL
+              value: {{ .Values.siteUrl | trimSuffix "/" | quote }}
+            - name: WP_TITLE
+              value: {{ .Values.init.siteTitle | quote }}
+            - name: WP_ADMIN_USER
+              value: {{ .Values.init.adminUser | quote }}
+            - name: WP_ADMIN_EMAIL
+              value: {{ .Values.init.adminEmail | quote }}
+            - name: WP_ADMIN_PASSWORD_FILE
+              value: /secrets/wordpress/{{ .Values.wordpress.auth.adminPasswordKey }}
+            - name: WC_VERSION
+              value: {{ .Values.init.woocommerce.version | quote }}
+            - name: WC_DISABLE_COMING_SOON
+              value: {{ .Values.init.woocommerce.disableComingSoon | quote }}
+            - name: WC_DEMO_ORDERS
+              value: {{ .Values.init.demoData.enabled | quote }}
+            - name: WC_API_KEY_ENABLED
+              value: {{ .Values.init.apiKey.enabled | quote }}
+            {{- if .Values.init.apiKey.enabled }}
+            - name: WC_API_USER
+              value: {{ .Values.init.apiKey.user | quote }}
+            - name: WC_API_USER_EMAIL
+              value: {{ .Values.init.apiKey.userEmail | quote }}
+            - name: WC_API_ROLE
+              value: {{ .Values.init.apiKey.role | quote }}
+            - name: WC_API_ROLE_NAME
+              value: {{ .Values.init.apiKey.roleName | default .Values.init.apiKey.role | quote }}
+            - name: WC_API_CAPS
+              value: {{ join " " .Values.init.apiKey.capabilities | quote }}
+            - name: WC_API_PERMISSIONS
+              value: {{ .Values.init.apiKey.permissions | quote }}
+            - name: WC_API_DESCRIPTION
+              value: {{ .Values.init.apiKey.description | quote }}
+            - name: WC_CONSUMER_KEY_FILE
+              value: /secrets/api-key/{{ .Values.init.apiKey.consumerKeyKey }}
+            - name: WC_CONSUMER_SECRET_FILE
+              value: /secrets/api-key/{{ .Values.init.apiKey.consumerSecretKey }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.init.resources | nindent 12 }}
+          volumeMounts:
+            - name: docroot
+              mountPath: /var/www/html
+            - name: wp-content
+              mountPath: /var/www/html/wp-content
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            {{- if .Values.wordpress.phpIni }}
+            - name: php-ini
+              mountPath: /usr/local/etc/php/conf.d/zz-urumi.ini
+              subPath: zz-urumi.ini
+              readOnly: true
+            {{- end }}
+            - name: wordpress-secret
+              mountPath: /secrets/wordpress
+              readOnly: true
+            {{- if .Values.init.apiKey.enabled }}
+            - name: api-key-secret
+              mountPath: /secrets/api-key
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: docroot
+          emptyDir: {}
+        - name: wp-content
+          persistentVolumeClaim:
+            claimName: {{ include "woocommerce.wordpress.pvcName" . }}
+        - name: scripts
+          configMap:
+            name: {{ $fullname }}
+        {{- if .Values.wordpress.phpIni }}
+        - name: php-ini
+          configMap:
+            name: {{ include "woocommerce.phpIniName" . }}
+        {{- end }}
+        # Only the admin password is mounted; salts arrive via env.
+        - name: wordpress-secret
+          secret:
+            secretName: {{ .Values.wordpress.auth.existingSecret }}
+            items:
+              - key: {{ .Values.wordpress.auth.adminPasswordKey }}
+                path: {{ .Values.wordpress.auth.adminPasswordKey }}
+        {{- if .Values.init.apiKey.enabled }}
+        - name: api-key-secret
+          secret:
+            secretName: {{ required "init.apiKey.existingSecret is required" .Values.init.apiKey.existingSecret }}
+            items:
+              - key: {{ .Values.init.apiKey.consumerKeyKey }}
+                path: {{ .Values.init.apiKey.consumerKeyKey }}
+              - key: {{ .Values.init.apiKey.consumerSecretKey }}
+                path: {{ .Values.init.apiKey.consumerSecretKey }}
+        {{- end }}
+{{- end }}

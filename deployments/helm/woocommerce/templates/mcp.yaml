@@ -1,0 +1,181 @@
+{{- if .Values.mcp.enabled }}
+{{- $fullname := printf "%s-mcp" (include "woocommerce.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $up := .Values.mcp.upstream -}}
+{{- $serverName := default .Values.ingress.host $up.serverName -}}
+{{- $port := int .Values.mcp.port -}}
+{{- $hosts := list (printf "%s:*" $fullname) (printf "%s.%s:*" $fullname .Release.Namespace) (printf "%s.%s.svc:*" $fullname .Release.Namespace) (printf "%s.%s.svc.cluster.local:*" $fullname .Release.Namespace) "localhost:*" "127.0.0.1:*" -}}
+{{- $hosts = concat $hosts .Values.mcp.extraAllowedHosts -}}
+{{- if not (hasPrefix "https://" $up.baseUrl) }}
+{{- fail "mcp.upstream.baseUrl must be https:// (WooCommerce Basic auth requires HTTPS)" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  # Internal only; deliberately not referenced by any Ingress.
+  type: ClusterIP
+  selector:
+    {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mcp") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: {{ .Values.mcp.replicas }}
+  selector:
+    matchLabels:
+      {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mcp") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "woocommerce.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mcp
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ include "woocommerce.image" .Values.mcp.image | quote }}
+          imagePullPolicy: {{ .Values.mcp.image.pullPolicy }}
+          args: ["--port", "{{ $port }}"]
+          env:
+            - name: WC_BASE_URL
+              value: {{ $up.baseUrl | trimSuffix "/" | quote }}
+            - name: WC_TLS_SERVER_NAME
+              value: {{ $serverName | quote }}
+            {{- if $up.caSecret.name }}
+            - name: WC_CA_FILE
+              value: /etc/woocommerce-mcp/ca/{{ $up.caSecret.key }}
+            {{- end }}
+            - name: WC_CONNECT_TIMEOUT
+              value: {{ $up.connectTimeout | quote }}
+            - name: WC_READ_TIMEOUT
+              value: {{ $up.readTimeout | quote }}
+            - name: WC_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "init.apiKey.existingSecret is required" .Values.init.apiKey.existingSecret }}
+                  key: {{ .Values.init.apiKey.consumerKeyKey }}
+            - name: WC_CONSUMER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.init.apiKey.existingSecret }}
+                  key: {{ .Values.init.apiKey.consumerSecretKey }}
+            - name: MCP_ALLOWED_HOSTS
+              value: {{ join "," $hosts | quote }}
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if $up.caSecret.name }}
+            - name: upstream-ca
+              mountPath: /etc/woocommerce-mcp/ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        {{- if $up.caSecret.name }}
+        - name: upstream-ca
+          secret:
+            secretName: {{ $up.caSecret.name }}
+            items:
+              - key: {{ $up.caSecret.key }}
+                path: {{ $up.caSecret.key }}
+        {{- end }}
+{{- if .Values.mcp.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mcp") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml (required "mcp.networkPolicy.clientPodLabels is required" .Values.mcp.networkPolicy.clientPodLabels) | nindent 14 }}
+          {{- with .Values.mcp.networkPolicy.clientNamespaceSelector }}
+          namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    # Cluster DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # WooCommerce, via Traefik's TLS entrypoint only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $up.traefik.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $up.traefik.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $up.traefik.port }}
+{{- end }}
+{{- end }}

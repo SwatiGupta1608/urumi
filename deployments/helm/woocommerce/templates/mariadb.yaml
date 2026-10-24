@@ -1,0 +1,128 @@
+{{- $fullname := include "woocommerce.mariadb.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
+spec:
+  # Internal only: reachable inside the cluster, never via Ingress or node ports.
+  type: ClusterIP
+  selector:
+    {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mariadb") | nindent 4 }}
+  ports:
+    - name: mysql
+      port: {{ .Values.mariadb.service.port }}
+      targetPort: mysql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
+spec:
+  serviceName: {{ $fullname }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mariadb") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "woocommerce.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mariadb
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: mariadb
+          image: {{ include "woocommerce.image" .Values.mariadb.image | quote }}
+          imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "mariadb.auth.existingSecret is required" .Values.mariadb.auth.existingSecret }}
+                  key: {{ .Values.mariadb.auth.rootPasswordKey }}
+            - name: MARIADB_DATABASE
+              value: {{ .Values.mariadb.database | quote }}
+            - name: MARIADB_USER
+              value: {{ .Values.mariadb.username | quote }}
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mariadb.auth.existingSecret }}
+                  key: {{ .Values.mariadb.auth.userPasswordKey }}
+          ports:
+            - name: mysql
+              containerPort: 3306
+          # healthcheck.sh ships in the official image; the entrypoint creates
+          # the healthcheck@localhost user and $DATADIR/.my-healthcheck.cnf.
+          startupProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.mariadb.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mariadb") | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.mariadb.persistence.accessMode }}
+        {{- include "woocommerce.storageClass" .Values.mariadb.persistence.storageClass | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.mariadb.persistence.size }}
+{{- if .Values.mariadb.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "mariadb") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "wordpress") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "init") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: mysql
+{{- end }}

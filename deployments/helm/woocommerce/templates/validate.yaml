@@ -1,0 +1,15 @@
+{{- /* Render-time guards for values that would otherwise fail late or unsafely. */ -}}
+{{- if not (regexMatch "^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$" .Values.siteUrl) }}
+{{- fail "siteUrl must look like https://host[:port] (no path, no quotes)" }}
+{{- end }}
+{{- if not (has .Values.init.apiKey.permissions (list "read" "write" "read_write")) }}
+{{- fail "init.apiKey.permissions must be one of: read, write, read_write" }}
+{{- end }}
+{{- if and .Values.init.enabled .Values.init.apiKey.enabled (not (hasPrefix "https://" .Values.siteUrl)) }}
+{{- fail "WooCommerce only accepts consumer-key Basic auth over HTTPS; set siteUrl to https://..." }}
+{{- end }}
+{{- range .Values.init.apiKey.capabilities }}
+{{- if not (regexMatch "^[a-z_]+$" .) }}
+{{- fail (printf "invalid capability name %q" .) }}
+{{- end }}
+{{- end }}

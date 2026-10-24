@@ -1,0 +1,238 @@
+# Default values target the local k3d cluster `urumi`.
+# For a k3s VPS, layer values-vps.example.yaml (copied and edited) on top.
+#
+# NO PASSWORDS OR KEYS BELONG IN THIS FILE. Every credential is read from a
+# Kubernetes Secret that you create out-of-band (see scripts/create-secrets.sh
+# and README.md). Only the Secret *names* and *keys* are configured here.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Public URL WordPress uses for links, redirects and REST API discovery.
+# Must match how clients reach the Ingress. k3d maps host 8443 -> Traefik 443.
+# WooCommerce only accepts consumer-key Basic auth over HTTPS, so keep https.
+siteUrl: "https://shop.localtest.me:8443"
+
+mariadb:
+  image:
+    repository: docker.io/library/mariadb
+    tag: "11.4.13"
+    # Optional "sha256:..." pin; when set the image is pulled by digest.
+    digest: ""
+    pullPolicy: IfNotPresent
+  database: wordpress
+  username: wordpress
+  auth:
+    # Secret must contain the two keys below.
+    existingSecret: woocommerce-db
+    rootPasswordKey: mariadb-root-password
+    userPasswordKey: mariadb-password
+  persistence:
+    # "" uses the cluster default StorageClass (local-path on k3d/k3s).
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+  service:
+    # Internal only. Never change this to NodePort/LoadBalancer.
+    port: 3306
+  # Restrict MariaDB ingress to the WordPress and init-job pods.
+  # k3s enforces NetworkPolicy out of the box (embedded kube-router).
+  networkPolicy:
+    enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+
+wordpress:
+  image:
+    repository: docker.io/library/wordpress
+    tag: "7.1.3-php8.3-apache"
+    # Pinned multi-arch index digest (amd64 + arm64 verified): PHP 8.3.36,
+    # built from php-8.3.36.tar.xz (sha256 dd54693a...92fd, matches php.net),
+    # which fixes CVE-2026-109618 and CVE-2026-109619. The tag alone is mutable.
+    digest: "sha256:d42f63cb89ad0eab272c4b393164e63830d0df270009907919f7dcce52b1a20b"
+    pullPolicy: IfNotPresent
+  tablePrefix: wp_
+  auth:
+    # Secret must contain: admin-password and the eight salt keys below.
+    existingSecret: woocommerce-wordpress
+    adminPasswordKey: admin-password
+    saltKeys:
+      WORDPRESS_AUTH_KEY: auth-key
+      WORDPRESS_SECURE_AUTH_KEY: secure-auth-key
+      WORDPRESS_LOGGED_IN_KEY: logged-in-key
+      WORDPRESS_NONCE_KEY: nonce-key
+      WORDPRESS_AUTH_SALT: auth-salt
+      WORDPRESS_SECURE_AUTH_SALT: secure-auth-salt
+      WORDPRESS_LOGGED_IN_SALT: logged-in-salt
+      WORDPRESS_NONCE_SALT: nonce-salt
+  # wp-content (plugins, themes, uploads) is persisted. WordPress core comes
+  # from the image on every start, so upgrading the tag upgrades core.
+  persistence:
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    # Keep the PVC on `helm uninstall` so uploads/plugins are not lost.
+    keepOnUninstall: true
+  service:
+    port: 80
+  phpMemoryLimit: 256M
+  # Extra php.ini directives, mounted into PHP's conf.d scan dir so they apply
+  # at Apache/mod_php startup, before request parsing (ini_set() or .user.ini
+  # would be too late). Changing them rolls the pod via a checksum annotation.
+  phpIni:
+    # PHP advisory mitigation for CVE-2026-109619 (and the related upload
+    # progress issue in the Oct 23 2026 advisory). Defense in depth only; the
+    # actual fix is the PHP 8.3.36 image above. WordPress/WooCommerce do not
+    # use PHP session upload progress.
+    session.upload_progress.enabled: "0"
+  debug: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  host: shop.localtest.me
+  annotations: {}
+  # Traefik Middleware that sends plain-HTTP requests to HTTPS. Without it
+  # WordPress' canonical redirect keeps the http scheme and lands on a broken
+  # http://host:8443 URL. port is the public HTTPS port ("" for 443).
+  httpsRedirect:
+    enabled: true
+    port: "8443"
+  # Certificate served by Traefik for this host. Locally it is issued by a
+  # throwaway dev CA (scripts/create-local-tls.sh), which lets the in-cluster
+  # MCP server verify TLS instead of skipping verification. If the Secret is
+  # missing Traefik falls back to its default self-signed certificate.
+  # On a VPS, point this at a cert-manager / ACME issued Secret.
+  tls:
+    - secretName: shop-tls
+      hosts:
+        - shop.localtest.me
+
+# Idempotent post-install/post-upgrade Job that installs WordPress core into
+# the database, installs WooCommerce, and provisions a least-privilege REST key.
+init:
+  enabled: true
+  image:
+    repository: docker.io/library/wordpress
+    tag: "cli-2.12.0-php8.3"
+    # Pinned: PHP 8.3.36 from the same verified tarball as the web image.
+    digest: "sha256:661db880e953da051abcac6c0a769767b995a82cd52101c003ca7438dd427d7d"
+    pullPolicy: IfNotPresent
+  siteTitle: "Urumi Shop"
+  adminUser: admin
+  adminEmail: admin@shop.localtest.me
+  woocommerce:
+    # Pinned plugin version from wordpress.org (requires WordPress >= 7.0).
+    version: "11.2.1"
+    # Make the storefront visible to logged-out visitors.
+    disableComingSoon: true
+  # Synthetic demo orders (fake customer, no payment) for testing the MCP
+  # order tools. Local/dev only; leave false on a real store.
+  demoData:
+    enabled: false
+  apiKey:
+    enabled: true
+    # Secret must contain consumer-key (ck_ + 40 hex) and
+    # consumer-secret (cs_ + 40 hex). The gateway will mount the same Secret.
+    existingSecret: woocommerce-api-key
+    consumerKeyKey: consumer-key
+    consumerSecretKey: consumer-secret
+    # WooCommerce key scope: read | write | read_write. The MCP tools read
+    # products/orders and create products / update order status.
+    permissions: read_write
+    description: "urumi-mcp-gateway"
+    # Dedicated WordPress user the key acts as. It gets a custom role holding
+    # only product and order capabilities, not administrator or shop_manager.
+    # (Slug kept from the product spike so the existing user/key stay valid.)
+    user: urumi-api
+    userEmail: urumi-api@shop.localtest.me
+    role: urumi_product_api
+    roleName: "Urumi store API"
+    capabilities:
+      - read
+      - read_private_products   # GET /products (list) checks this
+      - edit_products
+      - edit_published_products
+      - publish_products         # POST /products checks this
+      - assign_product_terms     # set categories/tags on create
+      - read_private_shop_orders # GET /orders, GET /orders/{id}
+      - edit_shop_orders         # PUT /orders/{id} (status)
+      - edit_others_shop_orders  # orders are not authored by the API user
+      # Deliberately absent: list_users (customers), *_shop_coupons (coupons),
+      # manage_woocommerce (settings, system status, reports), publish/delete
+      # orders (create/delete), and every refund-related capability.
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+
+# WooCommerce MCP server (apps/woocommerce-mcp). Internal only: ClusterIP
+# Service, no Ingress, NetworkPolicy-restricted in both directions.
+mcp:
+  enabled: true
+  image:
+    # Built locally and imported into k3d (see apps/woocommerce-mcp/README.md).
+    repository: urumi/woocommerce-mcp
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8000
+  upstream:
+    # WooCommerce only accepts consumer-key Basic auth over HTTPS. The server
+    # therefore dials Traefik's in-cluster Service over TLS (Traefik sets
+    # X-Forwarded-Proto: https for WordPress) instead of the plain-HTTP
+    # WordPress Service. `shop.localtest.me` resolves to 127.0.0.1 in-cluster,
+    # so the public name is used only for SNI, certificate check and Host.
+    baseUrl: https://traefik.kube-system.svc.cluster.local
+    # SNI / certificate hostname / Host header; "" = ingress.host.
+    serverName: ""
+    # CA trusted for this upstream only. Locally: the dev CA from
+    # scripts/create-local-tls.sh. On a VPS with a public certificate set
+    # name: "" to use the public CA bundle.
+    caSecret:
+      name: shop-tls-ca
+      key: ca.crt
+    connectTimeout: 5
+    readTimeout: 15
+    # Where Traefik's pods run, for the egress NetworkPolicy. port is the
+    # container port behind the Service's 443 (k3s: websecure = 8443).
+    traefik:
+      namespace: kube-system
+      podLabels:
+        app.kubernetes.io/name: traefik
+      port: 8443
+  # Extra Host header values accepted by the MCP endpoint (DNS-rebinding
+  # protection). The Service names and localhost (port-forward) are added.
+  extraAllowedHosts: []
+  networkPolicy:
+    enabled: true
+    # Only pods with these labels may call the MCP server...
+    clientPodLabels:
+      urumi.dev/woocommerce-mcp-client: "true"
+    # ...in namespaces matching this selector. null = this namespace only.
+    clientNamespaceSelector: null
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

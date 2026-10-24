@@ -1,0 +1,12 @@
+{{- if .Values.wordpress.phpIni }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "woocommerce.phpIniName" . }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+data:
+  zz-urumi.ini: |
+    {{- include "woocommerce.phpIni" . | nindent 4 }}
+{{- end }}

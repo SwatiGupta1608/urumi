@@ -1,0 +1,115 @@
+{{- $fullname := include "woocommerce.wordpress.fullname" . -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "woocommerce.wordpress.pvcName" . }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+  {{- if .Values.wordpress.persistence.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.wordpress.persistence.accessMode }}
+  {{- include "woocommerce.storageClass" .Values.wordpress.persistence.storageClass | nindent 2 }}
+  resources:
+    requests:
+      storage: {{ .Values.wordpress.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "wordpress") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.wordpress.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "woocommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+spec:
+  replicas: 1
+  # ReadWriteOnce volume: the old pod must stop before the new one mounts it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "woocommerce.selectorLabels" (dict "ctx" . "component" "wordpress") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "woocommerce.labels" . | nindent 8 }}
+        app.kubernetes.io/component: wordpress
+      annotations:
+        # php.ini is read only at Apache start; roll the pod when it changes.
+        checksum/php-ini: {{ include "woocommerce.phpIni" . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wordpress
+          image: {{ include "woocommerce.image" .Values.wordpress.image | quote }}
+          imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+          env:
+            {{- include "woocommerce.wordpress.env" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 80
+          # First start copies WordPress core into the docroot.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          # Exercises PHP + database. Before install / with FORCE_SSL_ADMIN this
+          # is a 302, which kubelet counts as success.
+          readinessProbe:
+            httpGet:
+              path: /wp-login.php
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Apache-only liveness so a database outage does not restart WordPress.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.wordpress.resources | nindent 12 }}
+          volumeMounts:
+            - name: wp-content
+              mountPath: /var/www/html/wp-content
+            {{- if .Values.wordpress.phpIni }}
+            - name: php-ini
+              mountPath: /usr/local/etc/php/conf.d/zz-urumi.ini
+              subPath: zz-urumi.ini
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: wp-content
+          persistentVolumeClaim:
+            claimName: {{ include "woocommerce.wordpress.pvcName" . }}
+        {{- if .Values.wordpress.phpIni }}
+        - name: php-ini
+          configMap:
+            name: {{ include "woocommerce.phpIniName" . }}
+        {{- end }}
