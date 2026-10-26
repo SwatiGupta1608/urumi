@@ -7,9 +7,10 @@ Security properties
   tools are already filtered by the gateway). Calls are made only through the
   gateway with the user's key; unknown tool names are refused.
 * Arguments are validated against the tool's JSON schema before any call.
-* A call needs explicit user confirmation unless the upstream marks the tool
-  `readOnlyHint: true` or an operator lists it in CHAT_READONLY_TOOLS. Tool
-  names and model statements are never treated as a safety signal.
+* A call needs explicit user confirmation unless an operator reviewed the
+  exact tool and lists it in CHAT_READONLY_TOOLS. Upstream read-only metadata
+  never skips confirmation on its own (it can only force one), and tool
+  names or model statements are never treated as a safety signal.
 * Pending actions are bound to the session and an exact argument digest,
   expire, and move through pending -> executing -> done|cancelled|expired once.
 """
@@ -174,9 +175,16 @@ class ChatService:
     # ---------- policy ----------
 
     def requires_confirmation(self, tool: ToolSpec) -> bool:
-        if tool.read_only_hint is True and tool.destructive_hint is not True:
-            return False
-        return tool.name not in self.read_only_tools
+        """Confirmation is required unless an operator reviewed and allow-listed this exact tool.
+
+        Upstream metadata alone never skips confirmation (it is not blindly
+        trusted), but it can still force one: an allow-listed tool whose
+        upstream now says readOnlyHint=false or destructiveHint=true is
+        treated as mutating, since the earlier review no longer matches.
+        """
+        if tool.name not in self.read_only_tools:
+            return True
+        return tool.read_only_hint is False or tool.destructive_hint is True
 
     # ---------- turns ----------
 

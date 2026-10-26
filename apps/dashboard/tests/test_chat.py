@@ -79,7 +79,8 @@ def gw():
 
 def make_app(gw, provider, **kw):
     return create_app(gateway_url=GW, static_dir="/nonexistent", secure_cookies=False, idle_ttl=600, absolute_ttl=3600,
-                      chat_provider=provider, gateway_tools=gw, read_only_tools=frozenset({"woocommerce__list_products"}),
+                      chat_provider=provider, gateway_tools=gw,
+                      read_only_tools=kw.pop("read_only", frozenset({"woocommerce__list_products", "notes__list_notes", "notes__search"})),
                       chat_limits=kw.pop("limits", ChatLimits()), **kw)
 
 
@@ -306,6 +307,39 @@ async def test_confirmation_is_the_default(gw, gw_rest, tool):
     assert r["pending"] is not None and gw.calls == []
 
 
+async def test_upstream_read_only_metadata_alone_does_not_skip_confirmation(gw, gw_rest):
+    peek = ToolSpec("notes__peek", None, "Claims to be read-only", {"type": "object"}, True, None)  # not allow-listed
+    gw.tools[KEY_A].append(peek)
+    app = make_app(gw, ScriptedProvider(call("notes__peek", {})))
+    async with app.router.lifespan_context(app):
+        c = await client_for(app, KEY_A)
+        r = (await send(c)).json()
+    assert r["pending"] is not None and r["pending"]["tool"] == "notes__peek" and gw.calls == []
+
+
+@pytest.mark.parametrize("ro,destructive", [(False, None), (True, True), (None, True)])
+async def test_allow_listed_tool_contradicted_by_upstream_requires_confirmation(gw, gw_rest, ro, destructive):
+    changed = ToolSpec("notes__list_notes", "List notes", "now mutating?", {"type": "object", "properties": {}}, ro, destructive)
+    gw.tools[KEY_A] = [changed]
+    app = make_app(gw, ScriptedProvider(call("notes__list_notes", {})))
+    async with app.router.lifespan_context(app):
+        c = await client_for(app, KEY_A)
+        r = (await send(c)).json()
+    assert r["pending"] is not None and gw.calls == []
+
+
+async def test_allow_listed_unannotated_tool_runs_without_confirmation(gw, gw_rest):
+    app = make_app(gw, ScriptedProvider(call("woocommerce__list_products", {}), ProviderReply("ok")))
+    async with app.router.lifespan_context(app):
+        c = await client_for(app, KEY_A)
+        r = (await send(c)).json()
+    assert r["pending"] is None and [n for _, n, _ in gw.calls] == ["woocommerce__list_products"]
+
+
+def test_default_pending_ttl_is_five_minutes():
+    assert ChatLimits().pending_ttl == 300
+
+
 async def test_confirm_executes_once_and_continues(gw, gw_rest):
     app, p = await mutation_app(gw, ProviderReply("Created your note."))
     async with app.router.lifespan_context(app):
@@ -397,6 +431,19 @@ async def test_confirm_revalidates_tool_availability(gw, gw_rest):
         gw.tools[KEY_A] = [t for t in gw.tools[KEY_A] if t.name != "notes__create_note"]  # e.g. upstream disabled
         r = (await c.post(f"/bff/chat/actions/{pend['id']}/confirm", json={"digest": pend["digest"]}, headers=H)).json()
     assert gw.calls == [] and "no longer available" in r["activity"][0]["summary"].lower()
+
+
+async def test_confirm_revalidates_arguments_against_current_schema(gw, gw_rest):
+    app, _ = await mutation_app(gw, ProviderReply("ok"))
+    async with app.router.lifespan_context(app):
+        c = await client_for(app, KEY_A)
+        pend = (await send(c)).json()["pending"]
+        stricter = ToolSpec("notes__create_note", "Create note", "Create a note",
+                            {"type": "object", "properties": {"title": {"type": "string", "maxLength": 1}, "body": {"type": "string"}},
+                             "required": ["title", "body"]}, False, False)
+        gw.tools[KEY_A] = [t if t.name != "notes__create_note" else stricter for t in gw.tools[KEY_A]]
+        r = (await c.post(f"/bff/chat/actions/{pend['id']}/confirm", json={"digest": pend["digest"]}, headers=H)).json()
+    assert gw.calls == [] and "invalid arguments" in r["activity"][0]["summary"].lower()
 
 
 async def test_message_while_action_pending_is_refused(gw, gw_rest):

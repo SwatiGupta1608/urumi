@@ -71,13 +71,22 @@ browser ──/bff/chat/*──▶ BFF ──(provider key)──▶ OpenAI-comp
   * the per-turn limit is reached. Limits: 6 model steps and 8 tool calls per
     turn; tool results are cut to 6000 characters for the model and 300 for
     the UI.
-* **Confirmation** is required for every tool unless the upstream publishes
-  `readOnlyHint: true` (and not `destructiveHint: true`), or an operator lists
-  it in `dashboard.chat.readOnlyTools`. The defaults are the three WooCommerce
-  read tools, because WooCommerce publishes no annotations. Each was checked
-  against `apps/woocommerce-mcp` and only issues `GET` requests. The list
-  matches gateway tool names, so it trusts whichever upstream an admin
-  registers under the `woocommerce` slug. The BFF returns a
+* **Confirmation** is required for every tool unless an operator has
+  reviewed that exact tool and listed it in `dashboard.chat.readOnlyTools`.
+  Upstream `readOnlyHint` metadata is not trusted on its own; it never skips
+  confirmation, but it can force one: a listed tool that its upstream now
+  marks `readOnlyHint: false` or `destructiveHint: true` is confirmed again.
+  The reviewed list has 25 tools:
+  * WooCommerce `list_products`, `list_orders`, `get_order`: only `GET`
+    requests in `apps/woocommerce-mcp`.
+  * Notes `list_notes`, `get_note`: `SELECT`-only.
+  * 20 GitHub `get_*`, `list_*`, `search_*` and `issue_read` tools: the server
+    runs with `--read-only`, so writes are blocked server-side.
+
+  WooCommerce `create_product` and `update_order_status`, Notes
+  `create_note` and `delete_note`, and any newly discovered tool always need
+  confirmation. The list matches gateway tool names, so it trusts whichever
+  upstream an admin registers under that slug. The BFF returns a
   preview with a pending action that is:
   * bound to the session,
   * bound to an exact digest of tool + arguments,
