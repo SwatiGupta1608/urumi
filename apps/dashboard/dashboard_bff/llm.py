@@ -54,6 +54,34 @@ class ChatProvider(Protocol):
 _SECRETISH = re.compile(r"(?i)(sk-[A-Za-z0-9_-]{8,}|bearer\s+\S+|api[_-]?key\S*)")
 
 
+_DURATION = re.compile(r"^(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$")
+
+
+def _seconds(value: str | None) -> float | None:
+    """Parse '12', '12.5', '38.362s', '1m2.5s' or '250ms' into seconds."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    m = _DURATION.match(value)
+    if not m or not any(m.groups()):
+        return None
+    mins, secs, ms = (float(g) if g else 0.0 for g in m.groups())
+    return mins * 60 + secs + ms / 1000
+
+
+def _retry_after(headers: httpx.Headers) -> float | None:
+    """Server-suggested wait: Retry-After, else the longer of the rate-limit reset hints."""
+    ra = _seconds(headers.get("retry-after"))
+    if ra is not None:
+        return ra
+    resets = [v for v in (_seconds(headers.get("x-ratelimit-reset-tokens")), _seconds(headers.get("x-ratelimit-reset-requests"))) if v is not None]
+    return max(resets) if resets else None
+
+
 def _safe(text: str, limit: int = 200) -> str:
     return _SECRETISH.sub("***", text.replace("\n", " "))[:limit]
 
@@ -90,9 +118,8 @@ class OpenAICompatibleProvider:
             raise ProviderError("unavailable", f"The language model provider is unreachable ({type(exc).__name__}).") from None
 
         if r.status_code == 429:
-            ra = r.headers.get("retry-after")
             raise ProviderError("rate_limited", "The language model provider is rate limiting requests. Try again shortly.",
-                                retry_after=float(ra) if ra and ra.replace(".", "", 1).isdigit() else None)
+                                retry_after=_retry_after(r.headers))
         if r.status_code in (401, 403):
             raise ProviderError("auth", "The language model provider rejected the server's credentials (operator configuration).")
         detail = ""

@@ -61,6 +61,9 @@ class ChatLimits:
     tools_cache_ttl: float = 30.0
     max_activity: int = 50
     max_ui_messages: int = 100
+    # Provider rate limits (HTTP 429): wait as the provider asks, bounded.
+    max_rate_limit_waits: int = 3      # per model call
+    max_rate_limit_wait: float = 60.0  # seconds per wait; longer requests fail fast
 
 
 class ChatError(Exception):
@@ -317,16 +320,25 @@ class ChatService:
     async def _complete(self, c: Conversation, tool_defs: list[dict[str, Any]]):
         assert self.provider is not None
         budget = self.limits.max_context_chars
-        for attempt in range(2):
+        shrunk = False
+        waits = 0
+        while True:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, *self._window(c.history, budget)]
             try:
                 return await self.provider.complete(messages, tool_defs)
             except ProviderError as exc:
-                if exc.kind == "context_length" and attempt == 0:
+                if exc.kind == "context_length" and not shrunk:
                     budget //= 3  # retry once with a much shorter window
+                    shrunk = True
+                    continue
+                wait = 2.0 if exc.retry_after is None else exc.retry_after
+                if exc.kind == "rate_limited" and waits < self.limits.max_rate_limit_waits \
+                        and wait <= self.limits.max_rate_limit_wait:
+                    waits += 1
+                    log.info("provider rate limited; waiting %.1fs (attempt %d/%d)", wait, waits, self.limits.max_rate_limit_waits)
+                    await anyio.sleep(wait)
                     continue
                 raise
-        raise ProviderError("context_length", "The conversation is too long for the model.")
 
     async def _handle(self, c: Conversation, key: str, call: ToolCall, aliases: dict[str, ToolSpec]):
         tool = aliases.get(call.name)

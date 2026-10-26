@@ -217,7 +217,7 @@ async def test_tool_call_and_step_limits(gw, gw_rest):
 
 @pytest.mark.parametrize("exc,status,code", [
     (ProviderError("timeout", "The language model did not respond within 60s."), 504, "provider_timeout"),
-    (ProviderError("rate_limited", "rate limited"), 429, "provider_rate_limited"),
+    (ProviderError("rate_limited", "rate limited", retry_after=3600), 429, "provider_rate_limited"),  # beyond the wait cap
     (ProviderError("auth", "The language model provider rejected the server's credentials."), 502, "provider_auth"),
     (ProviderError("malformed", "bad"), 502, "provider_malformed"),
 ])
@@ -228,6 +228,30 @@ async def test_provider_errors_roll_back_the_turn(gw, gw_rest, exc, status, code
         r = await send(c, "hello")
         assert r.status_code == status and r.json()["error"] == code and KEY_A not in r.text
         assert (await c.get("/bff/chat")).json()["messages"] == []  # user can simply retry
+
+
+async def test_rate_limit_waits_and_retries_within_bounds(gw, gw_rest):
+    p = ScriptedProvider(call("woocommerce__list_products", {}),
+                         ProviderError("rate_limited", "rl", retry_after=0.01), ProviderError("rate_limited", "rl", retry_after=0.01),
+                         ProviderReply("Here are the products."))
+    app = make_app(gw, p)
+    async with app.router.lifespan_context(app):
+        c = await client_for(app, KEY_A)
+        r = await send(c)
+    assert r.status_code == 200 and r.json()["messages"][-1]["text"] == "Here are the products."
+    assert len(gw.calls) == 1  # the tool ran once; only the model call was retried
+
+
+@pytest.mark.parametrize("errors,reason", [
+    ([ProviderError("rate_limited", "rl", retry_after=0.01)] * 4, "too many waits"),
+    ([ProviderError("rate_limited", "rl", retry_after=3600)], "wait too long"),
+])
+async def test_rate_limit_gives_up_with_clear_error(gw, gw_rest, errors, reason):
+    app = make_app(gw, ScriptedProvider(*errors, ProviderReply("never")))
+    async with app.router.lifespan_context(app):
+        c = await client_for(app, KEY_A)
+        r = await send(c)
+    assert r.status_code == 429 and r.json()["error"] == "provider_rate_limited", reason
 
 
 async def test_context_length_retries_with_shorter_window(gw, gw_rest):

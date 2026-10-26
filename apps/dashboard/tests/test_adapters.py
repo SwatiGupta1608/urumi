@@ -100,6 +100,18 @@ async def test_provider_error_mapping(response, kind):
         assert exc.value.retry_after == 3
 
 
+@pytest.mark.parametrize("headers,expected", [
+    ({"retry-after": "7"}, 7.0),
+    ({"x-ratelimit-reset-tokens": "38.362s", "x-ratelimit-reset-requests": "2m0.5s"}, 120.5),
+    ({"x-ratelimit-reset-tokens": "250ms"}, 0.25),
+    ({}, None),
+])
+async def test_rate_limit_retry_hint_parsing(headers, expected):
+    with pytest.raises(ProviderError) as exc:
+        await provider(lambda req: httpx.Response(429, headers=headers)).complete([{"role": "user", "content": "x"}], [])
+    assert exc.value.kind == "rate_limited" and exc.value.retry_after == expected
+
+
 async def test_provider_timeout():
     def handler(req):
         # MockTransport has no socket, so raise what httpx raises on a real read timeout.
