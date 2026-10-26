@@ -150,6 +150,25 @@ describe("loading and errors", () => {
     expect(await within(form).findByRole("alert")).toHaveTextContent("not an allowed upstream destination");
   });
 
+  it("gateway card shows 'ready' once, not duplicated", async () => {
+    fakeBackend(signedIn(ADMIN));
+    render(<App />);
+    const card = (await screen.findByRole("heading", { name: "Gateway" })).closest(".card") as HTMLElement;
+    await within(card).findByText("ready");
+    expect(within(card).getAllByText("ready")).toHaveLength(1);
+  });
+
+  it("credential row: reference name when set, plain 'none' when not; register button is spaced", async () => {
+    window.location.hash = "#/upstreams";
+    fakeBackend(signedIn(ADMIN));
+    render(<App />);
+    const woo = await screen.findByTestId("upstream-card-woocommerce"); // credential_ref: null
+    expect(woo).toHaveTextContent("Credentialnone");
+    expect(woo).not.toHaveTextContent("reference name only");
+    expect(screen.getByTestId("upstream-card-github")).toHaveTextContent("github-token (reference name only)");
+    expect(screen.getByRole("button", { name: "Register upstream" }).parentElement).toHaveClass("actions-bar");
+  });
+
   it("shows namespaced tools and admin-only markers", async () => {
     window.location.hash = "#/upstreams";
     fakeBackend(signedIn(ADMIN));

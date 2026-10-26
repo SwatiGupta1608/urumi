@@ -86,7 +86,9 @@ function UpstreamCard({ u, tools, onToggle, onDiscover, onDelete, onSave }: {
       </div>
       <dl className="kv">
         <dt>URL</dt><dd className="mono break">{u.url}</dd>
-        <dt>Credential</dt><dd>{u.credential_ref ? <span className="mono">{u.credential_ref}</span> : <span className="muted">none</span>} <span className="muted small">(reference name only)</span></dd>
+        <dt>Credential</dt><dd>{u.credential_ref
+          ? <><span className="mono">{u.credential_ref}</span> <span className="muted small">(reference name only)</span></>
+          : <span className="muted">none</span>}</dd>
         <dt>Last discovery</dt><dd><Time value={u.last_discovery_at} /></dd>
         <dt>Last success</dt><dd><Time value={u.last_success_at} /></dd>
         {u.last_error && (<><dt>Error</dt><dd className="error-text">{u.last_error}</dd></>)}
@@ -120,7 +122,7 @@ function RegisterForm({ onCreated }: { onCreated: (slug: string) => Promise<void
   const [f, setF] = useState({ slug: "", display_name: "", url: "", credential_ref: "", tools: "" });
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  if (!open) return <button onClick={() => setOpen(true)}>Register upstream</button>;
+  if (!open) return <div className="actions-bar"><button onClick={() => setOpen(true)}>Register upstream</button></div>;
 
   async function submit(e: FormEvent) {
     e.preventDefault();

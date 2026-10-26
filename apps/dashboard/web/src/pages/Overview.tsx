@@ -31,8 +31,8 @@ export function Overview() {
         <h3>Gateway</h3>
         {health.error ? <ErrorBanner error={health.error} /> : !health.data ? <Loading /> : (
           <p>
-            {health.data.gateway.ready ? <Badge tone="ok">ready</Badge> : <Badge tone="bad">not ready</Badge>}{" "}
-            <span className="muted">{health.data.gateway.status}</span>
+            {health.data.gateway.ready ? <Badge tone="ok">ready</Badge> : <Badge tone="bad">not ready</Badge>}
+            {health.data.gateway.status !== "ready" && <> <span className="muted">{health.data.gateway.status}</span></>}
           </p>
         )}
       </div>
