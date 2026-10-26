@@ -49,7 +49,70 @@ publicly. The BFF avoids both:
 | Team & keys | users (`/users`), create user, role and disable (`PATCH /users/{id}`), keys per user, issue (raw key shown **once**, copy button, held in memory only), revoke | admin |
 | My account | own profile and key metadata (`/me`, `/me/keys`) | member |
 | Audit log | `/api/v1/audit` with outcome, user, upstream and event filters, "load more" up to 500; denials shown separately from failures | admin |
-| Chat | layout and tool-activity panel only. `src/api/chat.ts` defines the `ChatApi` boundary; no LLM yet | everyone |
+| Chat | LLM agent over your gateway tools, with tool activity, confirm/cancel for changes, example prompts and reset (`/bff/chat/*`, see below) | everyone |
+
+## Chat agent
+
+The agent runs **inside the BFF**. The browser sends text and confirm/cancel
+decisions only; it never sees the gateway key or the LLM key.
+
+```
+browser ──/bff/chat/*──▶ BFF ──(provider key)──▶ OpenAI-compatible LLM
+                          └──MCP POST /mcp, Bearer <your own gateway key>──▶ gateway ──▶ upstream MCP servers
+```
+
+* **Tools are discovered per user** through the gateway (`tools/list`).
+  Members never see admin-only tools. The gateway authorises and audits every
+  call under the signed-in user.
+* **Every model call is validated.** A call is refused (and reported to the
+  model) when:
+  * the tool name is unknown or was not offered,
+  * the arguments are not JSON or fail the tool's JSON schema (`jsonschema`),
+  * the per-turn limit is reached. Limits: 6 model steps and 8 tool calls per
+    turn; tool results are cut to 6000 characters for the model and 300 for
+    the UI.
+* **Confirmation** is required for every tool unless the upstream publishes
+  `readOnlyHint: true` (and not `destructiveHint: true`), or an operator lists
+  it in `dashboard.chat.readOnlyTools`. The defaults are the three WooCommerce
+  read tools, because WooCommerce publishes no annotations. Each was checked
+  against `apps/woocommerce-mcp` and only issues `GET` requests. The list
+  matches gateway tool names, so it trusts whichever upstream an admin
+  registers under the `woocommerce` slug. The BFF returns a
+  preview with a pending action that is:
+  * bound to the session,
+  * bound to an exact digest of tool + arguments,
+  * valid for 5 minutes,
+  * single-use (`pending → executing → done | cancelled | expired`; a double
+    click gets 409).
+
+  On confirm, the tool's availability and the arguments are re-checked
+  against a fresh gateway tool list. A cancelled or expired action is never
+  executed.
+* **Untrusted output**: tool results are labelled as untrusted data for the
+  model, and the UI renders everything as plain text.
+* **State** is in memory per BFF session (bounded to 60 history messages and
+  about 60k characters of context). It is cleared on logout, session expiry
+  or a revoked key, and lost on restart. Order-tool results (which can contain
+  customer names and emails) live only there.
+
+### Configure a real provider
+
+The default chart has **no provider**. Chat then shows "unavailable" and
+`POST /bff/chat/messages` returns `503 provider_not_configured`. Nothing is
+simulated. To enable chat:
+
+```sh
+# 1. Store the provider API key out-of-band (never in values or git):
+printf '%s' "$KEY_FROM_YOUR_PASSWORD_MANAGER" | kubectl -n urumi-gateway create secret generic dashboard-llm --from-file=api-key=/dev/stdin
+# 2. Point the chart at an OpenAI-compatible Chat Completions endpoint with tool calling:
+helm upgrade gateway deployments/helm/gateway -n urumi-gateway --reuse-values \
+  --set dashboard.chat.provider.baseUrl=https://api.openai.com/v1 \
+  --set dashboard.chat.provider.model=<model-with-tool-calling>
+```
+
+Setting `baseUrl` also adds an HTTPS-only (443) egress rule to the
+dashboard's NetworkPolicy, with private and cluster ranges excluded. Without
+it, the dashboard can still reach only DNS and the gateway.
 
 ## API gaps (not faked in the UI)
 

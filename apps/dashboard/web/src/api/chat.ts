@@ -1,43 +1,56 @@
-// Boundary for the upcoming chat agent. The dashboard UI depends only on this
-// interface; the next task supplies a real implementation (e.g. a BFF endpoint
-// that runs the agent server-side and calls gateway tools with the user's own
-// session). Nothing here talks to an LLM.
+// Chat agent boundary. The agent runs in the dashboard BFF (server side): the
+// browser only sends text and confirm/cancel decisions; it never sees the
+// gateway key or the LLM provider key. Shapes mirror dashboard_bff/chat.py.
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "notice";
+  text: string;
+  at: number; // unix seconds
+}
+
+export type ActivityStatus = "running" | "success" | "failure" | "awaiting_confirmation" | "cancelled" | "expired";
 
 export interface ToolActivity {
   id: string;
   tool: string; // namespaced gateway tool name
-  status: "running" | "ok" | "error";
-  startedAt: string;
-  durationMs?: number;
-  summary?: string;
+  args: Record<string, unknown>; // sanitised by the server
+  status: ActivityStatus;
+  summary: string; // concise, untrusted text; render as text only
+  at: number;
+  duration_ms: number | null;
 }
 
-export interface ChatMessage {
+export interface PendingAction {
   id: string;
-  role: "user" | "assistant";
-  text: string;
-  createdAt: string;
+  digest: string; // binds the confirmation to exactly this action
+  tool: string;
+  title: string | null;
+  description: string;
+  args: Record<string, unknown>;
+  expires_in: number;
+  state: "pending";
+  destructive: boolean;
 }
 
-export interface ChatReply {
-  message: ChatMessage;
+export interface ChatState {
+  messages: ChatMessage[];
   activity: ToolActivity[];
+  pending: PendingAction | null;
+  busy: boolean;
+}
+
+export interface ChatStatus {
+  available: boolean;
+  model?: string;
+  reason?: string;
 }
 
 export interface ChatApi {
-  readonly available: boolean;
-  send(history: ChatMessage[], text: string): Promise<ChatReply>;
+  status(): Promise<ChatStatus>;
+  state(): Promise<ChatState>;
+  send(text: string): Promise<ChatState>;
+  confirm(action: PendingAction): Promise<ChatState>;
+  cancel(action: PendingAction): Promise<ChatState>;
+  reset(): Promise<ChatState>;
 }
-
-export class ChatNotAvailableError extends Error {
-  constructor() {
-    super("The chat agent is not available yet.");
-  }
-}
-
-export const placeholderChatApi: ChatApi = {
-  available: false,
-  async send() {
-    throw new ChatNotAvailableError();
-  },
-};

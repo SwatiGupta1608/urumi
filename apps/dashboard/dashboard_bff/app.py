@@ -16,6 +16,7 @@ Run with: uvicorn --factory dashboard_bff.app:create_app --host 0.0.0.0 --port 8
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -32,7 +33,12 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .chat import ChatError, ChatLimits, ChatService
+from .gateway_mcp import GatewayAuthError, GatewayTools, McpGatewayClient
+from .llm import ChatProvider, provider_from_env
+
 log = logging.getLogger("dashboard_bff")
+_ACTION_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 COOKIE = "urumi_session"
 CSRF_HEADER = "x-urumi-dashboard"
@@ -69,15 +75,20 @@ class Session:
 class SessionStore:
     """In-memory sessions (single replica; restart = everyone logs in again)."""
 
-    def __init__(self, idle_ttl: float, absolute_ttl: float, max_sessions: int = 1000):
+    def __init__(self, idle_ttl: float, absolute_ttl: float, max_sessions: int = 1000, on_drop=None):
         self.idle_ttl, self.absolute_ttl, self.max_sessions = idle_ttl, absolute_ttl, max_sessions
         self._s: dict[str, Session] = {}
+        self._on_drop = on_drop or (lambda sid: None)  # e.g. clear that session's chat state
+
+    def _remove(self, sid: str) -> None:
+        if self._s.pop(sid, None) is not None:
+            self._on_drop(sid)
 
     def create(self, key: str, user: dict) -> str:
         self._expire()
         if len(self._s) >= self.max_sessions:  # drop the oldest
             oldest = min(self._s, key=lambda k: self._s[k].last_seen)
-            del self._s[oldest]
+            self._remove(oldest)
         sid = secrets.token_urlsafe(32)
         now = time.monotonic()
         self._s[sid] = Session(key=key, user=user, created=now, last_seen=now)
@@ -91,20 +102,20 @@ class SessionStore:
             return None
         now = time.monotonic()
         if now - s.last_seen > self.idle_ttl or now - s.created > self.absolute_ttl:
-            del self._s[sid]
+            self._remove(sid)
             return None
         s.last_seen = now
         return s
 
     def drop(self, sid: str | None) -> None:
         if sid:
-            self._s.pop(sid, None)
+            self._remove(sid)
 
     def _expire(self) -> None:
         now = time.monotonic()
         for sid in [k for k, s in self._s.items()
                     if now - s.last_seen > self.idle_ttl or now - s.created > self.absolute_ttl]:
-            del self._s[sid]
+            self._remove(sid)
 
     def __len__(self) -> int:
         return len(self._s)
@@ -128,13 +139,19 @@ class LoginLimiter:
         return True
 
 
+async def _async(value):
+    return value
+
+
 def _err(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse({"error": code, "message": message}, status_code=status)
 
 
 def create_app(*, gateway_url: str | None = None, static_dir: str | None = None,
                secure_cookies: bool | None = None, idle_ttl: float | None = None,
-               absolute_ttl: float | None = None, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+               absolute_ttl: float | None = None, transport: httpx.AsyncBaseTransport | None = None,
+               chat_provider: ChatProvider | None | str = "env", gateway_tools: GatewayTools | None = None,
+               chat_limits: ChatLimits | None = None, read_only_tools: frozenset[str] | None = None) -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     gateway_url = (gateway_url or os.environ.get("GATEWAY_URL", "")).rstrip("/")
@@ -145,7 +162,14 @@ def create_app(*, gateway_url: str | None = None, static_dir: str | None = None,
     idle = idle_ttl if idle_ttl is not None else float(os.environ.get("DASHBOARD_SESSION_IDLE_SECONDS", "1800"))
     absolute = absolute_ttl if absolute_ttl is not None else float(os.environ.get("DASHBOARD_SESSION_MAX_SECONDS", "28800"))
 
-    sessions = SessionStore(idle, absolute)
+    provider = provider_from_env() if chat_provider == "env" else chat_provider
+    ro = read_only_tools if read_only_tools is not None else frozenset(
+        t.strip() for t in os.environ.get("CHAT_READONLY_TOOLS", "").split(",") if t.strip())
+    limits = chat_limits or ChatLimits(max_steps=int(os.environ.get("CHAT_MAX_STEPS", "6")),
+                                       max_tool_calls=int(os.environ.get("CHAT_MAX_TOOL_CALLS", "8")))
+    chat = ChatService(provider, gateway_tools or McpGatewayClient(gateway_url, transport=transport),
+                       read_only_tools=ro, limits=limits)
+    sessions = SessionStore(idle, absolute, on_drop=chat.drop)
     limiter = LoginLimiter()
     state: dict[str, httpx.AsyncClient] = {}
 
@@ -163,6 +187,9 @@ def create_app(*, gateway_url: str | None = None, static_dir: str | None = None,
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.sessions = sessions
+    app.state.chat = chat
+    log.info("chat provider: %s; operator read-only tools: %d",
+             f"configured ({provider.model})" if provider else "not configured", len(ro))
 
     def set_cookie(resp: Response, sid: str) -> None:
         resp.set_cookie(COOKIE, sid, httponly=True, secure=secure, samesite="strict", path="/", max_age=int(absolute))
@@ -257,6 +284,84 @@ def create_app(*, gateway_url: str | None = None, static_dir: str | None = None,
             clear_cookie(resp)
             return resp
         return {"user": s.user}
+
+    # ---------- chat agent ----------
+
+    def chat_session(request: Request, *, write: bool):
+        if write and not csrf_ok(request):
+            return None, _err(403, "csrf", "Missing dashboard request header or cross-origin request.")
+        sid = request.cookies.get(COOKIE)
+        s = sessions.get(sid)
+        if s is None:
+            resp = _err(401, "no_session", "Not signed in or the session expired.")
+            clear_cookie(resp)
+            return None, resp
+        return (sid, s), None
+
+    async def chat_call(request: Request, fn, *, write: bool = True):
+        ctx, err = chat_session(request, write=write)
+        if err:
+            return err
+        sid, s = ctx
+        try:
+            return JSONResponse(await fn(sid, s))
+        except ChatError as exc:
+            return _err(exc.status, exc.code, exc.message)
+        except GatewayAuthError:
+            sessions.drop(sid)
+            resp = _err(401, "key_rejected", "Your API key is no longer valid (revoked, or user disabled). Sign in again.")
+            clear_cookie(resp)
+            return resp
+
+    async def json_body(request: Request) -> dict:
+        raw = await request.body()
+        if len(raw) > MAX_BODY:
+            raise ChatError(413, "too_large", "Request body too large.")
+        try:
+            data = json.loads(raw or b"{}")
+        except ValueError:
+            raise ChatError(400, "bad_request", "Send a JSON object.") from None
+        if not isinstance(data, dict):
+            raise ChatError(400, "bad_request", "Send a JSON object.")
+        return data
+
+    def check_action_id(action_id: str) -> None:
+        if not _ACTION_ID.match(action_id):
+            raise ChatError(404, "no_such_action", "There is no such pending action in this session.")
+
+    @app.get("/bff/chat/status")
+    async def chat_status(request: Request):
+        return await chat_call(request, lambda sid, s: _async(chat.status()), write=False)
+
+    @app.get("/bff/chat")
+    async def chat_state(request: Request):
+        return await chat_call(request, lambda sid, s: _async(chat.conversation(sid, s.user["id"]).view()), write=False)
+
+    @app.post("/bff/chat/messages")
+    async def chat_send(request: Request):
+        async def fn(sid, s):
+            body = await json_body(request)
+            return await chat.send(sid, s.user["id"], s.key, str(body.get("text", "")))
+        return await chat_call(request, fn)
+
+    @app.post("/bff/chat/reset")
+    async def chat_reset(request: Request):
+        return await chat_call(request, lambda sid, s: _async(chat.reset(sid, s.user["id"])))
+
+    @app.post("/bff/chat/actions/{action_id}/confirm")
+    async def chat_confirm(request: Request, action_id: str):
+        async def fn(sid, s):
+            check_action_id(action_id)
+            body = await json_body(request)
+            return await chat.confirm(sid, s.user["id"], s.key, action_id, str(body.get("digest", "")))
+        return await chat_call(request, fn)
+
+    @app.post("/bff/chat/actions/{action_id}/cancel")
+    async def chat_cancel(request: Request, action_id: str):
+        async def fn(sid, s):
+            check_action_id(action_id)
+            return await chat.cancel(sid, s.user["id"], s.key, action_id)
+        return await chat_call(request, fn)
 
     # ---------- gateway proxy ----------
 

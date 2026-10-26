@@ -3,6 +3,7 @@
 // server-side. The browser never sees or stores an API key except the one
 // returned once by key creation, which callers must keep in memory only.
 
+import type { ChatApi, ChatState, ChatStatus, PendingAction } from "./chat";
 import type {
   ApiKey, AuditQuery, AuditRecord, Health, NewApiKey, Role, Tool, Upstream, UpstreamInput, UpstreamPatch, User,
 } from "./types";
@@ -126,3 +127,13 @@ export const api = {
 };
 
 export type Api = typeof api;
+
+/** Chat agent API (served by the BFF; see dashboard_bff/chat.py). */
+export const chatApi: ChatApi = {
+  status: () => request<ChatStatus>("GET", "/bff/chat/status"),
+  state: () => request<ChatState>("GET", "/bff/chat"),
+  send: (text: string) => request<ChatState>("POST", "/bff/chat/messages", { text }),
+  confirm: (a: PendingAction) => request<ChatState>("POST", `/bff/chat/actions/${enc(a.id)}/confirm`, { digest: a.digest }),
+  cancel: (a: PendingAction) => request<ChatState>("POST", `/bff/chat/actions/${enc(a.id)}/cancel`, {}),
+  reset: () => request<ChatState>("POST", "/bff/chat/reset", {}),
+};

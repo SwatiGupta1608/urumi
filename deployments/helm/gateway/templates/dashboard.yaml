@@ -2,6 +2,27 @@
 {{- $name := include "gateway.component" (dict "ctx" . "component" "dashboard") -}}
 {{- $d := .Values.dashboard -}}
 {{- $gwName := include "gateway.component" (dict "ctx" . "component" "gateway") -}}
+{{- $chat := $d.chat -}}
+{{- $llm := $chat.provider -}}
+{{- if and $llm.baseUrl (not (hasPrefix "https://" $llm.baseUrl)) }}
+{{- fail "dashboard.chat.provider.baseUrl must be https://" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+data:
+  CHAT_PROVIDER_BASE_URL: {{ $llm.baseUrl | quote }}
+  CHAT_MODEL: {{ $llm.model | quote }}
+  CHAT_PROVIDER_TIMEOUT_SECONDS: {{ $llm.timeoutSeconds | quote }}
+  CHAT_MAX_OUTPUT_TOKENS: {{ $llm.maxOutputTokens | quote }}
+  CHAT_MAX_STEPS: {{ $chat.maxSteps | quote }}
+  CHAT_MAX_TOOL_CALLS: {{ $chat.maxToolCalls | quote }}
+  CHAT_READONLY_TOOLS: {{ join "," $chat.readOnlyTools | quote }}
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -38,6 +59,8 @@ spec:
         app.kubernetes.io/component: dashboard
         # Admitted by the gateway's NetworkPolicy.
         {{- toYaml .Values.gateway.networkPolicy.clientPodLabels | nindent 8 }}
+      annotations:
+        checksum/chat-config: {{ toJson $chat | sha256sum }}
     spec:
       {{- include "gateway.podSecurity" (dict "uid" 10001) | nindent 6 }}
       containers:
@@ -45,7 +68,17 @@ spec:
           image: {{ include "gateway.image" $d.image | quote }}
           imagePullPolicy: {{ $d.image.pullPolicy }}
           args: ["--port", "{{ $d.port }}"]
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
           env:
+            # Provider key (optional): chat stays "unavailable" if the Secret is absent.
+            - name: CHAT_PROVIDER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $llm.apiKeySecret.name }}
+                  key: {{ $llm.apiKeySecret.key }}
+                  optional: true
             - name: GATEWAY_URL
               value: "http://{{ $gwName }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.gateway.port }}"
             - name: DASHBOARD_STATIC_DIR
@@ -112,4 +145,15 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.gateway.port }}
+    {{- if $llm.baseUrl }}
+    # LLM provider over HTTPS (private/cluster ranges excluded).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml $chat.providerEgressExcept | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
 {{- end }}

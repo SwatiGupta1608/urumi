@@ -143,7 +143,7 @@ dashboard:
   enabled: true
   image:
     repository: urumi/dashboard
-    tag: "0.1.0"
+    tag: "0.2.0"
     digest: ""
     pullPolicy: IfNotPresent
   # In-memory sessions: keep a single replica (see README).
@@ -154,6 +154,36 @@ dashboard:
   secureCookies: false
   sessionIdleSeconds: 1800
   sessionMaxSeconds: 28800
+  # Chat agent (runs in the BFF). Without provider.baseUrl + model, chat is
+  # shown as unavailable; nothing is simulated.
+  chat:
+    provider:
+      # Any OpenAI-compatible Chat Completions API with tool calling,
+      # e.g. https://api.openai.com/v1 or another compatible gateway.
+      baseUrl: ""
+      model: ""
+      # Secret holding the provider API key (create it out-of-band; optional).
+      apiKeySecret:
+        name: dashboard-llm
+        key: api-key
+      timeoutSeconds: 60
+      maxOutputTokens: 1024
+    maxSteps: 6
+    maxToolCalls: 8
+    # Gateway tools an operator declares read-only (no confirmation needed)
+    # because their upstream does not publish readOnlyHint. Everything else
+    # without readOnlyHint=true asks the user to confirm first.
+    readOnlyTools:
+      - woocommerce__list_products
+      - woocommerce__list_orders
+      - woocommerce__get_order
+    # HTTPS egress to the provider, only rendered when baseUrl is set.
+    providerEgressExcept:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+      - 100.64.0.0/10
   networkPolicy:
     # Pods allowed to reach the dashboard (empty = none; kubectl port-forward
     # and kubelet probes still work). Add e.g. an ingress controller here
