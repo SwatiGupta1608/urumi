@@ -8,11 +8,13 @@ server-side chat agent can drive the tools with explicit confirmation for
 anything that changes data. Everything runs on Kubernetes (k3d locally, with
 values-only changes intended for k3s).
 
-> **Status (commit `0aa22dd`):** the gateway, all three upstream MCP servers,
-> the dashboard and the browser end-to-end flow are deployed and verified on a
-> local k3d cluster. **The chat agent has not been run against a real LLM
-> provider.** It is implemented and covered by mocked tests, but no provider
-> was configured, so the deployed chat reports "unavailable" (see
+> **Status (commit `4fe2545`):** the gateway, all three upstream MCP
+> servers, the dashboard, the browser end-to-end flow and the **LLM chat
+> agent** are deployed and verified on a local k3d cluster. The chat agent was
+> tested live with **Groq's free tier (`openai/gpt-oss-120b`)**: product and
+> notes listing, a multi-step order lookup, and a write that ran exactly once
+> after confirmation and never when cancelled. Other providers and models
+> were not tested, and free-tier rate limits make replies slow (see
 > [Known limitations](#known-limitations)).
 
 ---
@@ -161,8 +163,8 @@ scripts/prefetch-wheels.sh apps/gateway && scripts/prefetch-wheels.sh apps/notes
 docker build --build-context wheels=apps/gateway/.wheels   -t urumi/gateway:0.1.0   apps/gateway
 docker build --build-context wheels=apps/notes-mcp/.wheels -t urumi/notes-mcp:0.1.0 apps/notes-mcp
 (cd apps/dashboard/web && npm ci && npm run build)          # static SPA, copied into the image
-docker build --build-context wheels=apps/dashboard/.wheels -t urumi/dashboard:0.2.2 apps/dashboard
-k3d image import urumi/gateway:0.1.0 urumi/notes-mcp:0.1.0 urumi/dashboard:0.2.2 -c urumi
+docker build --build-context wheels=apps/dashboard/.wheels -t urumi/dashboard:0.2.3 apps/dashboard
+k3d image import urumi/gateway:0.1.0 urumi/notes-mcp:0.1.0 urumi/dashboard:0.2.3 -c urumi
 
 helm lint deployments/helm/gateway
 helm template gateway deployments/helm/gateway -n urumi-gateway | less    # review before deploying
@@ -380,18 +382,32 @@ browser → /bff/chat/* → BFF ─► OpenAI-compatible LLM (key from Secret)
   rendered as plain text in the UI.
 * **Configuring a provider.** With none configured (the default), chat
   shows "unavailable" and returns `503 provider_not_configured`; nothing is
-  simulated. To configure one:
+  simulated. Any OpenAI-compatible Chat Completions API with tool calling
+  works. The verified setup is **Groq's free tier** (no card needed): create
+  a key at console.groq.com, then run these in your own terminal:
 
   ```sh
-  pbpaste | kubectl -n urumi-gateway create secret generic dashboard-llm --from-file=api-key=/dev/stdin
-  helm upgrade gateway deployments/helm/gateway -n urumi-gateway --reuse-values \
-    --set dashboard.chat.provider.baseUrl=https://<openai-compatible-endpoint>/v1 \
-    --set dashboard.chat.provider.model=<model-with-tool-calling>
+  # Store the key: paste it at the hidden prompt (never on the command line or in chat).
+  read -rs KEY && printf '%s' "$KEY" | kubectl -n urumi-gateway create secret generic dashboard-llm --from-file=api-key=/dev/stdin; unset KEY
+  helm upgrade gateway deployments/helm/gateway -n urumi-gateway --reuse-values --wait \
+    --set dashboard.chat.provider.baseUrl=https://api.groq.com/openai/v1 \
+    --set dashboard.chat.provider.model=openai/gpt-oss-120b \
+    --set dashboard.chat.provider.maxOutputTokens=4096 \
+    --set dashboard.chat.provider.timeoutSeconds=120
+  kubectl -n urumi-gateway logs deploy/gateway-dashboard | grep "chat provider"   # "configured (openai/gpt-oss-120b)"
   ```
 
-  Setting `baseUrl` also adds an HTTPS-only egress rule for the dashboard
-  pod. Order results contain customer names and emails and are sent to the
-  provider, so check its data-handling terms first.
+  * Setting `baseUrl` also adds an HTTPS-only egress rule for the dashboard
+    pod. Order results contain customer names and emails and are sent to the
+    provider, so check its data-handling terms first.
+  * When the provider rate-limits (HTTP 429), the agent waits as told by
+    `Retry-After` or `x-ratelimit-reset-*`: at most 3 waits per model call,
+    each at most 60 s. After that, the user gets a clear "rate limited" error.
+  * The provider settings live in the Helm release, not in `values.yaml`.
+    Upgrade later (for example to a new image tag) with
+    `--reset-then-reuse-values`, which keeps them while applying new chart
+    defaults. This Helm 4 build's `--reuse-values` also kept the old image
+    tag.
 
 Details: `apps/dashboard/README.md`.
 
@@ -443,7 +459,7 @@ customer order.
 | 9 | Key revocation | Admin revokes the member's key in Team & keys | The member's next click returns to login with "API key was rejected"; `/mcp` with that key returns 401 |
 | 10 | Upstream disablement | Upstreams → Disable `notes`; list tools; call `notes__list_notes`; then Enable | `notes__*` tools disappear and the call is refused; they return after enabling |
 | 11 | Failure isolation | `kubectl -n urumi-gateway scale deploy/gateway-notes --replicas=0`, Rediscover `notes`, call a WooCommerce tool; then `--replicas=1` | Notes shows `unreachable` with a sanitised error; WooCommerce and GitHub keep working |
-| 12 | Confirmed and cancelled writes | Chat page | **Requires an LLM provider (not verified live).** Without one, Chat shows "unavailable". The confirm/cancel/expiry flow is covered by automated tests |
+| 12 | Chat with confirmed and cancelled writes | Chat page (provider configured): "List the 5 newest products in the store.", "Show my team's notes.", "Find the most recent order, then get that order's full details…", "Create a note titled 'Chat demo' …" → Confirm, then another create → Cancel | Read-only tools run without asking; the multi-step request calls `list_orders` then `get_order`; the create shows a confirmation card and runs exactly once on Confirm; the cancelled one never runs; all calls appear in the audit log under your user |
 
 Steps 1–5 and 7–10 were exercised on the live cluster during development,
 via dashboard, Inspector, curl and an automated browser run. These steps
@@ -455,7 +471,10 @@ were **not** run live exactly as written:
 * **Step 11:** scaling Notes to zero. Isolation was verified live with an
   unavailable GitHub upstream, and with slow, down and timing-out upstreams
   in automated tests.
-* **Step 12:** not run against a real LLM.
+* **Step 12:** run live with Groq (`openai/gpt-oss-120b`) through the
+  dashboard's chat API, scripted (11/11 checks). In the browser, a read-only
+  prompt was run with a real LLM; the Confirm and Cancel buttons were tested
+  against mocked state (frontend tests), not clicked against the real LLM.
 
 `apps/woocommerce-mcp/scripts/integration_check.py` is an in-cluster check
 of the WooCommerce MCP server. It creates one uniquely
@@ -464,13 +483,13 @@ named product; with `--status-test-order <id>` it moves only that demo order
 
 ## Tests and verified results
 
-### Automated tests (run on commit `0aa22dd`)
+### Automated tests (run on commit `4fe2545`)
 
 ```sh
 (cd apps/woocommerce-mcp && uv run pytest -q)     # 92 passed
 (cd apps/gateway        && uv run pytest -q)     # 92 passed
 (cd apps/notes-mcp      && uv run pytest -q)     # 3 passed
-(cd apps/dashboard      && uv run pytest -q)     # 80 passed (BFF + chat agent; LLM and gateway mocked)
+(cd apps/dashboard      && uv run pytest -q)     # 87 passed (BFF + chat agent; LLM and gateway mocked)
 (cd apps/dashboard/web  && npm ci && npm run typecheck && npm run lint && npm test && npm run build)   # 26 passed
 helm lint deployments/helm/woocommerce && helm lint deployments/helm/gateway
 ```
@@ -482,8 +501,9 @@ real store. Coverage includes:
   timeouts,
 * audit attribution, no key forwarding, and credential redaction,
 * the BFF session, CSRF and proxy allow-list,
-* the chat tool loop, schema validation, provider errors, and mutation
-  preview, confirm, cancel, expiry and session binding,
+* the chat tool loop, schema validation, provider errors and bounded
+  rate-limit retries, and mutation preview, confirm, cancel, expiry and
+  session binding,
 * frontend role-based rendering, key-once handling, and safe rendering.
 
 ### Live-cluster checks (performed during development)
@@ -513,16 +533,31 @@ real store. Coverage includes:
     one-time key display, member restrictions, revocation ending the
     session, the mobile layout, and no JavaScript errors.
   * The Playwright script was run ad hoc and is **not committed**.
-* **Chat agent:**
-  * The BFF's MCP client listed 29 tools through the gateway from inside the
-    dashboard pod and called `notes__list_notes`, which was audited under
-    the signed-in user.
-  * Chat correctly reports "provider not configured".
+* **Chat agent with a real LLM** (Groq free tier, `openai/gpt-oss-120b`,
+  dashboard image `0.2.3`). A scripted run against the live chat API
+  **passed 11/11 checks**:
+  * The model picked the right tools: `woocommerce__list_products`,
+    `notes__list_notes`, and for the multi-step request `list_orders`
+    followed by `get_order`, with accurate summaries.
+  * `notes__create_note` returned a preview and did **not** run (the note
+    count was unchanged). It ran **exactly once** after Confirm, and a
+    repeated Confirm was refused.
+  * A cancelled create **never ran**, and confirming after the cancel was
+    refused.
+  * No gateway or provider key appeared in any chat response.
+  * The gateway audit log attributed every call to the signed-in user, with
+    exactly one `create_note`.
+  * A browser run of "Show my team's notes." rendered the reply and the
+    tool activity with no page errors.
+  * Without a provider, chat correctly reports "provider not configured".
+  * This live script was also run ad hoc and is **not committed**.
 
 ### Not verified
 
-* **The chat agent with a real LLM provider.** Tool selection, schema
-  adherence and multi-step behaviour of a real model are untested.
+* **The chat agent with any provider or model other than Groq
+  `openai/gpt-oss-120b`,** and the chat Confirm and Cancel buttons clicked in
+  a browser against a real LLM (they were exercised through the chat API and
+  in frontend tests).
 * Deployment on a k3s VPS (`values-vps.example.yaml` exists but was never
   applied), and amd64 builds of the locally built images.
 * The MCP Inspector *UI* (only the CLI was used), and demo step 11 exactly
@@ -530,8 +565,13 @@ real store. Coverage includes:
 
 ## Known limitations
 
-* **Live LLM chat has not been tested** (see above). Without a provider,
-  chat is disabled.
+* **LLM chat is slow on free tiers.** Groq's free tier allows 8,000
+  tokens/minute, and each request carries about 5,000 tokens of tool
+  definitions, so replies take roughly 30–100 s while the agent waits out
+  rate limits. A paid tier or fewer tools (for example disabling the 20
+  GitHub tools) is much faster. Without a provider, chat is disabled.
+* **Chat replies are plain text,** so Markdown such as tables appears raw.
+  This is deliberate: untrusted model output is never rendered as HTML.
 * **Single replicas:** the gateway's tool registry and the dashboard's
   sessions and conversations are in-process. Restarts sign users out and
   clear chat history.
@@ -545,8 +585,9 @@ real store. Coverage includes:
   their own keys.
 * **Upstreams don't see member identity:** Notes are shared team-wide, and
   GitHub acts as the token owner for everyone.
-* **Personal data:** order tools return customer name and email. Chat would
-  send them to the LLM provider.
+* **Personal data:** order tools return customer name and email, and chat
+  sends tool results to the LLM provider. Free tiers may retain prompts; the
+  local store contains only synthetic customers.
 * **Locally built images** (`urumi/*`) are imported into k3d and not pinned
   by digest. Images pulled from registries are pinned.
 * **Local TLS** uses a throwaway dev CA, and plain-HTTP port-forwarding is
