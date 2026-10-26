@@ -3,13 +3,15 @@
 Deploys the Urumi MCP Gateway (`apps/gateway`) with its own PostgreSQL, the
 Notes MCP server (`apps/notes-mcp`) and the GitHub MCP server, all in namespace
 `urumi-gateway`. It reuses the WooCommerce MCP server from the `woocommerce`
-release instead of duplicating it. Nothing is exposed through an Ingress.
+release instead of duplicating it. Nothing is exposed through an Ingress. The dashboard (`apps/dashboard/README.md`) is reached with
+`kubectl -n urumi-gateway port-forward svc/gateway-dashboard 18090:8090`.
 
 | Component | Kind | Reachable from | May reach |
 |-----------|------|----------------|-----------|
 | `gateway` | Deployment + ClusterIP :8080 | pods labelled `urumi.dev/gateway-client=true` (and `kubectl port-forward`) | DNS, `gateway-postgres:5432`, `gateway-notes:8000`, `gateway-github:8082`, WooCommerce MCP pods in `woocommerce`:8000 |
 | `gateway-postgres` | StatefulSet + PVC 2Gi (PostgreSQL 17.11) | gateway only | nothing |
 | `gateway-notes` | Deployment + PVC 1Gi (SQLite) | gateway only | nothing |
+| `gateway-dashboard` | Deployment (React SPA + BFF, `apps/dashboard`) | nobody except `kubectl port-forward` (ingress allow-list empty) | DNS, `gateway:8080` |
 | `gateway-github` | Deployment (`github-mcp-server v2.0.2 http --read-only`) | gateway only | DNS, public HTTPS (private/cluster ranges excluded) |
 
 All containers run as non-root with a read-only root filesystem, drop all

@@ -134,3 +134,35 @@ github:
     - 192.168.0.0/16
     - 169.254.0.0/16
     - 100.64.0.0/10
+
+# Dashboard (apps/dashboard): React SPA + backend-for-frontend in one pod.
+# Users sign in with their own gateway API key; the BFF keeps it server-side
+# (in memory) behind an HttpOnly session cookie. Internal only: reach it with
+#   kubectl -n urumi-gateway port-forward svc/gateway-dashboard 18090:8090
+dashboard:
+  enabled: true
+  image:
+    repository: urumi/dashboard
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  # In-memory sessions: keep a single replica (see README).
+  replicas: 1
+  port: 8090
+  # Cookies are marked Secure when served over HTTPS. Plain-HTTP
+  # port-forward to localhost needs false; set true behind TLS.
+  secureCookies: false
+  sessionIdleSeconds: 1800
+  sessionMaxSeconds: 28800
+  networkPolicy:
+    # Pods allowed to reach the dashboard (empty = none; kubectl port-forward
+    # and kubelet probes still work). Add e.g. an ingress controller here
+    # only together with an authentication/TLS design.
+    ingressFrom: []
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
