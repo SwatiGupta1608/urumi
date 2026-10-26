@@ -461,20 +461,35 @@ customer order.
 | 11 | Failure isolation | `kubectl -n urumi-gateway scale deploy/gateway-notes --replicas=0`, Rediscover `notes`, call a WooCommerce tool; then `--replicas=1` | Notes shows `unreachable` with a sanitised error; WooCommerce and GitHub keep working |
 | 12 | Chat with confirmed and cancelled writes | Chat page (provider configured): "List the 5 newest products in the store.", "Show my team's notes.", "Find the most recent order, then get that order's full details…", "Create a note titled 'Chat demo' …" → Confirm, then another create → Cancel | Read-only tools run without asking; the multi-step request calls `list_orders` then `get_order`; the create shows a confirmation card and runs exactly once on Confirm; the cancelled one never runs; all calls appear in the audit log under your user |
 
-Steps 1–5 and 7–10 were exercised on the live cluster during development,
-via dashboard, Inspector, curl and an automated browser run. These steps
-were **not** run live exactly as written:
-* **Step 6:** an admin changing an order's status *through the gateway*.
-  The live order-status test went directly to the WooCommerce MCP server
-  with `integration_check.py` (demo order `pending → on-hold → pending`).
-  Members being refused this tool through the gateway *was* verified live.
-* **Step 11:** scaling Notes to zero. Isolation was verified live with an
-  unavailable GitHub upstream, and with slow, down and timing-out upstreams
-  in automated tests.
-* **Step 12:** run live with Groq (`openai/gpt-oss-120b`) through the
-  dashboard's chat API, scripted (11/11 checks). In the browser, a read-only
-  prompt was run with a real LLM; the Confirm and Cancel buttons were tested
-  against mocked state (frontend tests), not clicked against the real LLM.
+**All 12 steps were run live, in order, on the final deployment**
+(commit `19ae680`, dashboard image `0.2.3`), and every step passed. The
+resulting state and audit entries were checked after each step.
+
+How each step was run:
+* **Steps 2–6** used the MCP Inspector CLI exactly as documented.
+  * Step 6 changed demo order 17 `pending → on-hold → pending` as admin
+    through the gateway, and it ended back at `pending`.
+* **Steps 1 and 7–10** (the dashboard steps) used the same dashboard and
+  gateway API calls the pages make, scripted rather than clicked.
+  * The pages themselves were covered by a separate 26/26 browser run (see
+    [Tests and verified results](#tests-and-verified-results)).
+  * In step 7, the member's refused order change left order 17 unchanged.
+* **Step 8:**
+  * The audit log attributed every call to the right user and recorded the
+    member's denial.
+  * The two failed calls were the expected ones from steps 10 and 11.
+  * Only argument names were stored.
+* **Step 11** scaled Notes to zero with `kubectl`.
+  * Notes showed `unreachable` with a sanitised error
+    (`connection: ConnectError…`) while WooCommerce and GitHub tools kept
+    working.
+  * After scaling back to one replica, Notes was reachable again with its
+    data intact.
+* **Step 12** ran against Groq (`openai/gpt-oss-120b`) through the
+  dashboard's chat API, scripted (11/11 checks).
+  * A read-only prompt was also run in the browser with the real model.
+  * The Confirm and Cancel buttons were exercised through that API and in
+    frontend tests, not clicked against the real model.
 
 `apps/woocommerce-mcp/scripts/integration_check.py` is an in-cluster check
 of the WooCommerce MCP server. It creates one uniquely
@@ -560,8 +575,7 @@ real store. Coverage includes:
   in frontend tests).
 * Deployment on a k3s VPS (`values-vps.example.yaml` exists but was never
   applied), and amd64 builds of the locally built images.
-* The MCP Inspector *UI* (only the CLI was used), and demo step 11 exactly
-  as written.
+* The MCP Inspector *UI* (only the CLI was used).
 
 ## Known limitations
 
