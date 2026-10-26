@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { ApiError } from "../api/client";
 
 export function Loading({ label = "Loading…" }: { label?: string }) {
-  return <p className="muted" role="status" aria-live="polite">{label}</p>;
+  return <p className="muted loading" role="status" aria-live="polite">{label}</p>;
 }
 
 export function ErrorBanner({ error, onRetry }: { error: ApiError | Error | string; onRetry?: () => void }) {

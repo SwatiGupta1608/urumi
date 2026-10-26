@@ -76,14 +76,17 @@ export function Chat({ chat = chatApi }: { chat?: ChatApi }) {
   return (
     <section className="chat">
       <header className="page-head">
-        <h2>Chat</h2>
+        <div>
+          <h2>Chat</h2>
+          <p className="page-sub">Ask questions across the store, team notes and GitHub using your own permissions.</p>
+        </div>
         <button className="secondary" disabled={!!busy || state.messages.length === 0}
           onClick={() => void run("reset", () => chat.reset())}>New conversation</button>
       </header>
       {!loaded ? <Loading /> : status && !available && (
         <Notice kind="warning">Chat is unavailable: {status.reason ?? "no language model is configured."}</Notice>
       )}
-      {available && status?.model && <p className="muted small">Model: <span className="mono">{status.model}</span>. Tools run with your permissions; changes ask for confirmation.</p>}
+      {available && status?.model && <p className="chat-meta">Model: <span className="mono">{status.model}</span>. Tools run with your permissions; changes ask for confirmation.</p>}
       {error && <ErrorBanner error={error} />}
 
       <div className="chat-grid">
@@ -127,8 +130,8 @@ export function Chat({ chat = chatApi }: { chat?: ChatApi }) {
             <ul className="activity-list">
               {state.activity.map((a) => (
                 <li key={a.id} data-testid="activity">
-                  <div className="row space wrap"><span className="mono">{a.tool}</span>{statusBadge(a.status)}</div>
-                  <div className="muted small mono break">{argText(a.args)}</div>
+                  <div className="row space"><span className="tool">{a.tool}</span>{statusBadge(a.status)}</div>
+                  <div className="muted small mono break args">{argText(a.args)}</div>
                   {a.summary && <div className="small msg-text">{a.summary}</div>}
                   {a.duration_ms != null && <div className="muted small">{a.duration_ms} ms</div>}
                 </li>
@@ -145,7 +148,7 @@ function PendingCard({ action, disabled, onConfirm, onCancel }:
   { action: PendingAction; disabled: boolean; onConfirm: () => void; onCancel: () => void }) {
   const [clicked, setClicked] = useState(false);
   return (
-    <div className="card highlight" role="dialog" aria-label="Confirm action">
+    <div className="card highlight confirm-card" role="dialog" aria-label="Confirm action">
       <h3>Confirm this action?</h3>
       <p>
         The assistant wants to run <span className="mono">{action.tool}</span>

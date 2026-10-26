@@ -34,6 +34,7 @@ export function Login({ notice }: { notice?: string }) {
   return (
     <main className="login">
       <form onSubmit={submit} className="card" aria-label="Sign in">
+        <span className="brand-mark" aria-hidden="true">U</span>
         <h1>Urumi Gateway</h1>
         <p className="muted">
           Sign in with <strong>your own</strong> gateway API key. It is sent once to the dashboard server, kept there for
@@ -53,7 +54,7 @@ export function Login({ notice }: { notice?: string }) {
           required
         />
         <button type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
-        <p className="muted small">No key? Ask a gateway admin to issue one for you.</p>
+        <p className="muted small login-foot">No key? Ask a gateway admin to issue one for you.</p>
       </form>
     </main>
   );

@@ -42,17 +42,20 @@ function Shell() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <strong>Urumi Gateway</strong>
+      <header className="sidebar">
+        <strong className="brand"><span className="brand-mark" aria-hidden="true">U</span>Urumi Gateway</strong>
         <nav aria-label="Main">
           {visible.map((p) => (
             <a key={p.id} href={`#/${p.id}`} aria-current={active === p.id ? "page" : undefined}>{p.label}</a>
           ))}
         </nav>
-        <span className="who">
-          {state.user.name} <span className="muted">({state.user.role})</span>
+        <div className="who">
+          <span className="avatar" aria-hidden="true">{state.user.name.slice(0, 1).toUpperCase()}</span>
+          <span className="who-text">
+            <strong>{state.user.name}</strong> <span className="muted small">({state.user.role})</span>
+          </span>
           <button className="link" onClick={() => void logout()}>Sign out</button>
-        </span>
+        </div>
       </header>
       <main className="content">
         {active === "overview" && <Overview />}

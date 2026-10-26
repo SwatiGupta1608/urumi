@@ -22,7 +22,10 @@ export function Audit() {
   return (
     <section>
       <header className="page-head">
-        <h2>Audit log</h2>
+        <div>
+          <h2>Audit log</h2>
+          <p className="page-sub">Tool calls and admin changes recorded by the gateway. Only argument names are kept; credentials are redacted.</p>
+        </div>
         <button className="secondary" onClick={() => void rows.reload()}>Refresh</button>
       </header>
       <div className="card row wrap filters" role="search">
@@ -55,27 +58,27 @@ export function Audit() {
           <>
             <div className="table-wrap">
               <table className="audit">
-                <thead><tr><th>Time</th><th>User</th><th>Event</th><th>Upstream</th><th>Tool</th><th>Duration</th><th>Outcome</th><th>Error</th></tr></thead>
+                <thead><tr><th>Time</th><th>User</th><th>Event</th><th>Upstream</th><th>Tool</th><th className="num">Duration</th><th>Outcome</th><th>Error</th></tr></thead>
                 <tbody>
                   {rows.data.map((r) => {
                     const o = outcome(r);
                     return (
                       <tr key={r.id} className={o} data-testid="audit-row">
-                        <td><Time value={r.created_at} /></td>
-                        <td>{r.user_id ? names.get(r.user_id) ?? <span className="mono small">{r.user_id.slice(0, 8)}</span> : <span className="muted">system</span>}</td>
-                        <td className="mono small">{r.event}</td>
+                        <td className="time"><Time value={r.created_at} /></td>
+                        <td className="nowrap">{r.user_id ? names.get(r.user_id) ?? <span className="mono small">{r.user_id.slice(0, 8)}</span> : <span className="muted">system</span>}</td>
+                        <td><span className="event">{r.event}</span></td>
                         <td className="mono">{r.upstream_slug ?? "—"}</td>
                         <td className="mono small">{r.tool_name ?? "—"}</td>
-                        <td>{r.duration_ms != null ? `${r.duration_ms} ms` : "—"}</td>
+                        <td className="num">{r.duration_ms != null ? `${r.duration_ms} ms` : "—"}</td>
                         <td>{o === "success" ? <Badge tone="ok">success</Badge> : o === "denied" ? <Badge tone="warn">denied</Badge> : <Badge tone="bad">failed</Badge>}</td>
-                        <td className="small break">{r.error ?? ""}</td>
+                        <td className="small err">{r.error ?? ""}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
-            <p className="muted small">
+            <p className="muted small table-foot">
               Showing the latest {rows.data.length} records.{" "}
               {rows.data.length >= (q.limit ?? 50) && (q.limit ?? 50) < MAX_LIMIT && (
                 <button className="link" onClick={() => set({ limit: Math.min(MAX_LIMIT, (q.limit ?? 50) * 2) })}>Load more</button>

@@ -56,10 +56,15 @@ export function Upstreams() {
 
   return (
     <section>
-      <header className="page-head"><h2>Upstream servers</h2></header>
+      <header className="page-head">
+        <div>
+          <h2>Upstream servers</h2>
+          <p className="page-sub">MCP servers the gateway discovers tools from and routes calls to.</p>
+        </div>
+        <RegisterForm onCreated={async (slug) => { await act(async () => undefined, `Registered ${slug}.`); }} />
+      </header>
       {flash && <Notice kind="success">{flash}</Notice>}
       {actionError && <ErrorBanner error={actionError} />}
-      <RegisterForm onCreated={async (slug) => { await act(async () => undefined, `Registered ${slug}.`); }} />
       {ups.error ? <ErrorBanner error={ups.error} onRetry={ups.reload} /> : !ups.data ? <Loading /> :
         ups.data.length === 0 ? <EmptyState>No upstreams registered.</EmptyState> :
           ups.data.map((u) => (
@@ -80,8 +85,11 @@ function UpstreamCard({ u, tools, onToggle, onDiscover, onDelete, onSave }: {
   const [editing, setEditing] = useState(false);
   return (
     <article className="card" data-testid={`upstream-card-${u.slug}`}>
-      <div className="row space">
-        <h3>{u.display_name} <span className="muted mono">{u.slug}</span></h3>
+      <div className="card-head">
+        <div>
+          <h3>{u.display_name}</h3>
+          <span className="subline mono">{u.slug}</span>
+        </div>
         <ReachBadge enabled={u.enabled} reachable={u.reachable} />
       </div>
       <dl className="kv">
@@ -106,7 +114,7 @@ function UpstreamCard({ u, tools, onToggle, onDiscover, onDelete, onSave }: {
           <ul className="tools">
             {tools.map((t) => (
               <li key={t.name}>
-                <span className="mono">{t.name}</span> {t.admin_only && <Badge tone="warn">admin only</Badge>}
+                <span className="tool-name"><span className="mono">{t.name}</span> {t.admin_only && <Badge tone="warn">admin only</Badge>}</span>
                 {t.description && <div className="muted small">{t.description}</div>}
               </li>
             ))}
@@ -147,16 +155,16 @@ function RegisterForm({ onCreated }: { onCreated: (slug: string) => Promise<void
 
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   return (
-    <form className="card form" onSubmit={submit} aria-label="Register upstream">
+    <form className="card form register-form" onSubmit={submit} aria-label="Register upstream">
       <h3>Register upstream</h3>
       {error && <ErrorBanner error={error} />}
       <label>Slug<input value={f.slug} onChange={set("slug")} placeholder="notes" required /></label>
       <label>Display name<input value={f.display_name} onChange={set("display_name")} required /></label>
-      <label>URL<input value={f.url} onChange={set("url")} placeholder="http://name.namespace.svc.cluster.local:8000/mcp" required /></label>
+      <label className="wide">URL<input value={f.url} onChange={set("url")} placeholder="http://name.namespace.svc.cluster.local:8000/mcp" required /></label>
       <label>Credential reference (optional)<input value={f.credential_ref} onChange={set("credential_ref")} placeholder="notes-token" /></label>
-      <label>Admin-only tools (comma-separated)<input value={f.tools} onChange={set("tools")} placeholder="create_product, update_order_status" /></label>
+      <label className="wide">Admin-only tools (comma-separated)<input value={f.tools} onChange={set("tools")} placeholder="create_product, update_order_status" /></label>
       <p className="muted small">The gateway only accepts in-cluster URLs on approved ports; credential values live in a Kubernetes Secret.</p>
-      <div className="row"><button type="submit" disabled={busy}>Register</button><button type="button" className="link" onClick={() => setOpen(false)}>Cancel</button></div>
+      <div className="row"><button type="submit" disabled={busy}>Register</button><button type="button" className="secondary" onClick={() => setOpen(false)}>Cancel</button></div>
     </form>
   );
 }
@@ -180,10 +188,10 @@ function EditForm({ u, onSave }: { u: Upstream; onSave: (p: UpstreamPatch) => Pr
   }
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   return (
-    <form className="form" onSubmit={submit} aria-label={`Edit ${u.slug}`}>
+    <form className="form edit-form" onSubmit={submit} aria-label={`Edit ${u.slug}`}>
       {error && <ErrorBanner error={error} />}
       <label>Display name<input value={f.display_name} onChange={set("display_name")} /></label>
-      <label>URL<input value={f.url} onChange={set("url")} /></label>
+      <label className="wide">URL<input value={f.url} onChange={set("url")} /></label>
       <label>Credential reference<input value={f.credential_ref} onChange={set("credential_ref")} placeholder="empty = none" /></label>
       <label>Admin-only tools<input value={f.tools} onChange={set("tools")} /></label>
       <button type="submit">Save</button>

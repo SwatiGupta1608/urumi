@@ -17,37 +17,54 @@ export function Overview() {
   const counts = new Map<string, number>();
   (tools.data ?? []).forEach((t: Tool) => counts.set(t.upstream, (counts.get(t.upstream) ?? 0) + 1));
 
+  const reachable = (ups.data ?? []).filter((u) => u.enabled && u.reachable).length;
+
   return (
     <section>
       <header className="page-head">
-        <h2>Overview</h2>
+        <div>
+          <h2>Overview</h2>
+          <p className="page-sub">Gateway and upstream health. Refreshes every {REFRESH_MS / 1000}s.</p>
+        </div>
         <button className="secondary" onClick={() => { void health.reload(); void tools.reload(); void ups.reload(); }}>
           Refresh
         </button>
       </header>
-      <p className="muted small">Refreshes every {REFRESH_MS / 1000}s.</p>
 
       <div className="card">
-        <h3>Gateway</h3>
-        {health.error ? <ErrorBanner error={health.error} /> : !health.data ? <Loading /> : (
-          <p>
-            {health.data.gateway.ready ? <Badge tone="ok">ready</Badge> : <Badge tone="bad">not ready</Badge>}
-            {health.data.gateway.status !== "ready" && <> <span className="muted">{health.data.gateway.status}</span></>}
-          </p>
-        )}
+        <div className="card-head">
+          <div>
+            <h3>Gateway</h3>
+            <span className="subline">MCP endpoint and admin API</span>
+          </div>
+          {health.data && !health.error && (health.data.gateway.ready ? <Badge tone="ok">ready</Badge> : <Badge tone="bad">not ready</Badge>)}
+        </div>
+        {health.error ? <ErrorBanner error={health.error} /> : !health.data ? <Loading /> :
+          health.data.gateway.status !== "ready" && <p className="muted small">{health.data.gateway.status}</p>}
       </div>
 
-      <h3>Upstream servers</h3>
+      <h3 className="section-title">
+        Upstream servers
+        {isAdmin && ups.data && ups.data.length > 0 && (
+          <span className="muted">{reachable} of {ups.data.length} reachable · {tools.data?.length ?? "…"} tools</span>
+        )}
+      </h3>
       {isAdmin ? (
         ups.error ? <ErrorBanner error={ups.error} onRetry={ups.reload} /> : !ups.data ? <Loading /> :
           ups.data.length === 0 ? <EmptyState>No upstreams registered yet.</EmptyState> : (
             <div className="grid">
               {ups.data.map((u) => (
                 <div className="card" key={u.slug} data-testid={`upstream-${u.slug}`}>
-                  <h4>{u.display_name} <span className="muted mono">{u.slug}</span></h4>
-                  <p><ReachBadge enabled={u.enabled} reachable={u.reachable} /> {u.tool_count} tools</p>
-                  <p className="small">Last successful discovery: <Time value={u.last_success_at} /></p>
-                  {u.last_error && <p className="small error-text">Error: {u.last_error}</p>}
+                  <div className="card-head">
+                    <div>
+                      <h4>{u.display_name}</h4>
+                      <span className="subline mono">{u.slug}</span>
+                    </div>
+                    <ReachBadge enabled={u.enabled} reachable={u.reachable} />
+                  </div>
+                  <div><span className="stat">{u.tool_count}</span> <span className="stat-label">tools</span></div>
+                  {u.last_error && <p className="inline-error">Error: {u.last_error}</p>}
+                  <p className="meta">Last successful discovery: <Time value={u.last_success_at} /></p>
                 </div>
               ))}
             </div>
@@ -61,7 +78,7 @@ export function Overview() {
                 {[...counts.entries()].sort().map(([slug, n]) => (
                   <div className="card" key={slug} data-testid={`upstream-${slug}`}>
                     <h4 className="mono">{slug}</h4>
-                    <p>{n} tools available</p>
+                    <p className="stat-label"><span className="stat">{n}</span> tools available</p>
                   </div>
                 ))}
               </div>
