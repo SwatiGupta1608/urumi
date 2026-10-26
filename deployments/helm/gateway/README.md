@@ -64,7 +64,7 @@ kubectl -n urumi-gateway port-forward svc/gateway 18080:8080 &
 H="Authorization: Bearer $ADMIN_KEY"
 curl -s -H "$H" -H 'Content-Type: application/json' localhost:18080/api/v1/upstreams -d '{"slug":"woocommerce","display_name":"WooCommerce","url":"http://shop-woocommerce-mcp.woocommerce.svc.cluster.local:8000/mcp","admin_only_tools":["create_product","update_order_status"]}'
 curl -s -H "$H" -H 'Content-Type: application/json' localhost:18080/api/v1/upstreams -d '{"slug":"notes","display_name":"Team notes","url":"http://gateway-notes.urumi-gateway.svc.cluster.local:8000/mcp","credential_ref":"notes-token"}'
-curl -s -H "$H" -H 'Content-Type: application/json' localhost:18080/api/v1/upstreams -d '{"slug":"github","display_name":"GitHub (read-only)","url":"http://gateway-github.urumi-gateway.svc.cluster.local:8082/","credential_ref":"github-token"}'
+curl -s -H "$H" -H 'Content-Type: application/json' localhost:18080/api/v1/upstreams -d '{"slug":"github","display_name":"GitHub read-only","url":"http://gateway-github.urumi-gateway.svc.cluster.local:8082/","credential_ref":"github-token"}'
 ```
 
 ## k3s VPS
