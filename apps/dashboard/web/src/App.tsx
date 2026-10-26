@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
-import { Loading } from "./components/ui";
+import { Loading, ThemeToggle } from "./components/ui";
 import { Audit } from "./pages/Audit";
 import { Chat } from "./pages/Chat";
 import { Login } from "./pages/Login";
@@ -49,6 +49,7 @@ function Shell() {
             <a key={p.id} href={`#/${p.id}`} aria-current={active === p.id ? "page" : undefined}>{p.label}</a>
           ))}
         </nav>
+        <ThemeToggle />
         <div className="who">
           <span className="avatar" aria-hidden="true">{state.user.name.slice(0, 1).toUpperCase()}</span>
           <span className="who-text">

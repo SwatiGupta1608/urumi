@@ -257,3 +257,20 @@ describe("helpers", () => {
     expect(outcome({ ...base, success: false, error: "timeout: no response" })).toBe("failure");
   });
 });
+
+describe("theme", () => {
+  it("switches light/dark/auto on <html> without writing browser storage", async () => {
+    fakeBackend({ "GET /bff/session": () => ({ status: 401, body: { error: "no_session", message: "x" } }) });
+    render(<App />);
+    const group = await screen.findByRole("group", { name: "Theme" });
+    expect(within(group).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(within(group).getByRole("button", { name: "Dark" }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(within(group).getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(within(group).getByRole("button", { name: "Light" }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    await userEvent.click(within(group).getByRole("button", { name: "Auto" }));
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    expect(storageWrites).not.toHaveBeenCalled();
+  });
+});

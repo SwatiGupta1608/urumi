@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { ErrorBanner, Notice } from "../components/ui";
+import { ErrorBanner, Notice, ThemeToggle } from "../components/ui";
 
 const KEY_RE = /^urumi_[0-9a-f]{12}_[A-Za-z0-9_-]{43}$/;
 
@@ -33,6 +33,7 @@ export function Login({ notice }: { notice?: string }) {
 
   return (
     <main className="login">
+      <ThemeToggle className="login-theme" />
       <form onSubmit={submit} className="card" aria-label="Sign in">
         <span className="brand-mark" aria-hidden="true">U</span>
         <h1>Urumi Gateway</h1>

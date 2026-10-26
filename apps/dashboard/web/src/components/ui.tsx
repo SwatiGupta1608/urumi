@@ -40,6 +40,30 @@ export function Time({ value }: { value: string | null }) {
   return <time dateTime={value} title={d.toISOString()}>{d.toLocaleString()}</time>;
 }
 
+type Theme = "auto" | "light" | "dark";
+const THEMES: { id: Theme; label: string }[] = [{ id: "auto", label: "Auto" }, { id: "light", label: "Light" }, { id: "dark", label: "Dark" }];
+
+function applyTheme(t: Theme) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+}
+
+/** Light/dark switch. "Auto" follows the OS. Held only on <html data-theme>: nothing is written to browser storage. */
+export function ThemeToggle({ className = "" }: { className?: string }) {
+  const [theme, setTheme] = useState<Theme>(() => (document.documentElement.getAttribute("data-theme") as Theme | null) ?? "auto");
+  function choose(t: Theme) {
+    applyTheme(t);
+    setTheme(t);
+  }
+  return (
+    <div className={`theme-toggle ${className}`} role="group" aria-label="Theme">
+      {THEMES.map((t) => (
+        <button key={t.id} type="button" aria-pressed={theme === t.id} onClick={() => choose(t.id)}>{t.label}</button>
+      ))}
+    </div>
+  );
+}
+
 /** Two-step button for destructive actions. */
 export function ConfirmButton({ label, confirmLabel = "Confirm", onConfirm, disabled, className = "danger" }:
   { label: string; confirmLabel?: string; onConfirm: () => void | Promise<void>; disabled?: boolean; className?: string }) {
